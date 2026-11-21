@@ -11,6 +11,11 @@ var Route = (function () {
         }
     }
 
+    function normalizeRoutePath(rawPath) {
+        if (rawPath === undefined || rawPath === null) return "";
+        return String(rawPath).trim().replace(/^\/+|\/+$/g, "");
+    }
+
     function currentMiddlewares() {
         var result = [];
         for (var i = 0; i < _middlewareStack.length; i++) {
@@ -65,8 +70,9 @@ var Route = (function () {
     }
 
     function register(methods, routeName, handlerSpec, options) {
-        if (!_routes[routeName]) {
-            _routes[routeName] = [];
+        var cleanRoute = normalizeRoutePath(routeName);
+        if (!_routes[cleanRoute]) {
+            _routes[cleanRoute] = [];
         }
 
         var opts = options || {};
@@ -75,7 +81,7 @@ var Route = (function () {
             normalizedMethods.push(String(methods[i]).toUpperCase());
         }
 
-        _routes[routeName].push({
+        _routes[cleanRoute].push({
             methods: normalizedMethods,
             action: opts.action || null,
             middlewares: currentMiddlewares(),
@@ -84,6 +90,61 @@ var Route = (function () {
         });
 
         return Route;
+    }
+
+    function matchDynamicRoute(normalizedRoute) {
+        if (!normalizedRoute) return null;
+
+        var incomingParts = normalizedRoute.split("/");
+        var routeKeys = Object.keys(_routes);
+        var bestMatch = null;
+        var bestStaticScore = -1;
+
+        for (var i = 0; i < routeKeys.length; i++) {
+            var pattern = routeKeys[i];
+            if (pattern.indexOf(":") === -1 && pattern.indexOf("{") === -1) {
+                continue;
+            }
+
+            var patternParts = pattern.split("/");
+            if (patternParts.length !== incomingParts.length) {
+                continue;
+            }
+
+            var extractedParams = {};
+            var isMatch = true;
+            var staticScore = 0;
+
+            for (var s = 0; s < patternParts.length; s++) {
+                var pSeg = patternParts[s];
+                var iSeg = incomingParts[s];
+
+                if (pSeg.charAt(0) === ":" && pSeg.length > 1) {
+                    extractedParams[pSeg.substring(1)] = iSeg;
+                } else if (
+                    pSeg.charAt(0) === "{" &&
+                    pSeg.charAt(pSeg.length - 1) === "}" &&
+                    pSeg.length > 2
+                ) {
+                    extractedParams[pSeg.substring(1, pSeg.length - 1)] = iSeg;
+                } else if (pSeg === iSeg) {
+                    staticScore++;
+                } else {
+                    isMatch = false;
+                    break;
+                }
+            }
+
+            if (isMatch && staticScore > bestStaticScore) {
+                bestStaticScore = staticScore;
+                bestMatch = {
+                    entries: _routes[pattern] || [],
+                    routeParams: extractedParams
+                };
+            }
+        }
+
+        return bestMatch;
     }
 
     function resolveResourceAbilities(opts) {
@@ -242,8 +303,19 @@ var Route = (function () {
         resolve: function (routeName, method, action) {
             boot();
 
-            var normalizedRoute = routeName === "/" ? "" : routeName;
+            var normalizedRoute = normalizeRoutePath(routeName);
+            var routeParams = {};
             var entries = _routes[normalizedRoute] || (normalizedRoute === "" ? _routes["/"] : null);
+
+            if (!entries) {
+                var dynamicMatch = matchDynamicRoute(normalizedRoute);
+                if (dynamicMatch) {
+                    entries = dynamicMatch.entries;
+                    routeParams = dynamicMatch.routeParams;
+                }
+            }
+
+            entries = Array.isArray(entries) ? entries : [];
 
             var validEntries = [];
             for (var v = 0; v < entries.length; v++) {
@@ -254,6 +326,7 @@ var Route = (function () {
                         action: entries[v].action,
                         middlewares: entries[v].middlewares,
                         options: entries[v].options,
+                        routeParams: routeParams,
                         handler: resolvedFn
                     });
                 }
@@ -447,9 +520,11 @@ var Middlewares = {
 
 function dispatchHttpRequest(e, defaultMethod) {
     try {
-        if (!e || !e.parameter) {
-            return handleResponse({ status: false, message: "Request parameters are required." });
+        if (!e) {
+            return handleResponse({ status: false, message: "Request event is required." });
         }
+
+        var rawParams = (e.parameter && typeof e.parameter === "object") ? e.parameter : {};
 
         var rawPayload = {};
         if (defaultMethod === "POST") {
@@ -457,24 +532,29 @@ function dispatchHttpRequest(e, defaultMethod) {
                 try {
                     rawPayload = JSON.parse(e.postData.contents);
                 } catch (parseErr) {
-                    rawPayload = e.parameter || {};
+                    rawPayload = rawParams;
                 }
             } else {
-                rawPayload = e.parameter || {};
+                rawPayload = rawParams;
             }
         }
 
-        var rawMethod = (e.parameter._method || rawPayload._method || defaultMethod).toString().toUpperCase();
+        var rawMethod = (rawParams._method || rawPayload._method || defaultMethod).toString().toUpperCase();
 
         if (rawMethod === "OPTIONS") {
             return handleResponse({ status: true, code: 204, message: "OK" });
         }
 
-        var routeName = e.parameter.route !== undefined && e.parameter.route !== null
-            ? String(e.parameter.route).trim()
-            : "";
+        var rawRoute = "";
+        if (rawParams.route !== undefined && rawParams.route !== null && String(rawParams.route).trim() !== "") {
+            rawRoute = String(rawParams.route).trim();
+        } else if (e.pathInfo !== undefined && e.pathInfo !== null) {
+            rawRoute = String(e.pathInfo).trim();
+        }
 
-        var params = sanitizeClientPayload(e.parameter);
+        var routeName = rawRoute.replace(/^\/+|\/+$/g, "");
+
+        var params = sanitizeClientPayload(rawParams);
         var payload = defaultMethod === "POST"
             ? sanitizeClientPayload(rawPayload)
             : {};
@@ -491,9 +571,19 @@ function dispatchHttpRequest(e, defaultMethod) {
         }
 
         var matchedRoute = resolution.route;
+        var routeParams = matchedRoute.routeParams || {};
+        var paramKeys = Object.keys(routeParams);
+        for (var p = 0; p < paramKeys.length; p++) {
+            var pKey = paramKeys[p];
+            if (params[pKey] === undefined) {
+                params[pKey] = routeParams[pKey];
+            }
+        }
+
         var context = {
             event: e,
             route: routeName,
+            routeParams: routeParams,
             method: rawMethod,
             action: action,
             params: params,
