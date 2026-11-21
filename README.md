@@ -82,7 +82,7 @@
 
 1. **Clone the repository and install dependencies:**
    ```bash
-   git clone [https://github.com/your-username/asal-gas.git](https://github.com/your-username/asal-gas.git)
+   git clone https://github.com/aqshalzuhdi/asal-gas.git
    cd asal-gas
    npm install
    ```
@@ -99,7 +99,7 @@
 
 4. **Verify the health-check endpoint:**
    ```bash
-   curl "http://localhost:3000/exec"
+   curl "http://localhost:3000"
    ```
 
 ---
