@@ -63,8 +63,9 @@
     ├── middleware/
     │   └── middleware.js       # Session authentication & request guards
     ├── routes/
-    │   └── routes.js           # API route definitions
+    │   └── api.js              # API route definitions
     └── tools/
+        |── CodeGenerator.js    # GAS Web Editor module/migration/controller generator
         └── DevTools.js         # Owner-only diagnostic & auth verification helpers
 ```
 
@@ -208,15 +209,25 @@ gas deploy "v1.0.1"
 | `gas migrate:status` | List all migrations and their execution status. |
 | `gas db:seed` | Execute registered seeders via `DatabaseSeeder`. |
 
+### CLI Reference Additions
+
+```markdown
+| `gas route:list [Filter] [--method <HTTP>]` | Display all registered routes, HTTP methods, actions, middlewares, and sheets. |
+| `gas db:reindex` | Rebuild local schema metadata and row lookup indexes. |
+```
+
 ---
 
+### API Request & Payload Convention
+
+```markdown
 ## API Request & Payload Convention
 
-Google Apps Script Web Apps dispatch routes via the `route` query parameter (`?route=<path>`). Because GAS does not support HTTP `OPTIONS` preflight requests, all mutations and authenticated queries use a standardized JSON envelope over `POST`.
+Google Apps Script Web Apps dispatch routes via the `route` query parameter (`?route=<path>`). When `?route` is omitted, requests automatically resolve to the root route (`""` or `"/"`). Because GAS does not support HTTP `OPTIONS` preflight requests, all mutations use a standardized JSON envelope over `POST`.
 
 ### 1. Health Check (`GET`)
 ```http
-GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<DEPLOYMENT_ID>/exec
+GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec
 ```
 
 ### 2. Authentication (`POST ?route=auth/login`)
@@ -227,7 +238,12 @@ GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<D
 }
 ```
 
-### 3. Universal CRUD Envelope (`POST ?route=<resource>`)
+### 3. Query & Pagination (`GET ?route=<resource>`)
+```http
+GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?route=users&session={{session}}&page=1&per_page=15&sort=-id
+```
+
+### 4. Universal Mutation Envelope (`POST ?route=<resource>`)
 
 **Create Record (`action: "create"`):**
 ```json
@@ -246,14 +262,14 @@ GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<D
 {
     "action": "update",
     "session": "{{session}}",
-    "id": 1,
     "data": {
+        "id": 1,
         "name": "Acme Global Ltd."
     }
 }
 ```
 
-**Delete Record (`action: "delete"`):**
+**Soft Delete Record (`action: "delete"`):**
 ```json
 {
     "action": "delete",
@@ -262,18 +278,23 @@ GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<D
 }
 ```
 
-**Complex Query / Eager Loading (`action: "read"`):**
+**Restore Soft-Deleted Record (`action: "restore"`):**
 ```json
 {
-    "action": "read",
+    "action": "restore",
     "session": "{{session}}",
-    "options": {
-        "with": ["users"],
-        "page": 1,
-        "limit": 15,
-        "with_trashed": false
-    }
+    "id": 1
 }
+```
+
+**Permanently Delete Record (`action: "force-delete"`):**
+```json
+{
+    "action": "force-delete",
+    "session": "{{session}}",
+    "id": 1
+}
+```
 ```
 
 ---
