@@ -152,7 +152,7 @@ gas init "My GAS Backend"
 ```bash
 gas deploy "v1.0.0"
 ```
-This pushes `src/` to Google Apps Script, publishes a versioned Web App deployment, and outputs your production URL (`[https://script.google.com/macros/s/](https://script.google.com/macros/s/)<DEPLOYMENT_ID>/exec`).
+This pushes `src/` to Google Apps Script, publishes a versioned Web App deployment, and outputs your production URL (`https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec`).
 
 ### 3. One-Time Workspace Provisioning (Owner-Only)
 Because public HTTP routes are locked against unauthenticated bootstrapping:
@@ -164,7 +164,15 @@ Because public HTTP routes are locked against unauthenticated bootstrapping:
 2. Select **`setupWorkspace`** from the function dropdown in the top toolbar and click **Run**.
 3. Approve the Google OAuth consent screen (**Review permissions → Advanced → Allow**).
    - `setupWorkspace()` creates a dedicated Google Spreadsheet, stores `SHEET_ID` in **Script Properties**, executes all pending migrations, and runs initial seeders.
-4. *(Optional)* Copy the `Web App URL` from your terminal and save it as `BASE_URL` in **Project Settings → Script Properties** (or let `CONFIG.BASE_URL` auto-capture it on the first live `/exec` request).
+4. *(Optional)* Copy the `Web App URL` from your terminal and save it as `BASE_URL` in **Project Settings → Script Properties**.
+
+**Execution Log Output (`setupWorkspace`):**
+
+![setupWorkspace Execution Output](docs/img/output-setupWorkspace.png)
+
+**Configured Script Properties (`SHEET_ID` & `BASE_URL`):**
+
+![Configured Script Properties](docs/img/assign-propertyScript.png)
 
 ### 4. Subsequent Updates
 For future releases, run:
