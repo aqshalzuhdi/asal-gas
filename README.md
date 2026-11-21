@@ -18,12 +18,13 @@
 ### Key Features
 
 - **Zero-Quota Local Emulator:** Build, migrate, seed, and test endpoints locally against `local/storage/db.json` without hitting Google Apps Script execution quotas.
-- **Unified `gas` CLI:** Generate controllers, migrations, and seeders, or handle `clasp` initialization, push, pull, and Web App deployments from one tool.
+- **Unified `gas` CLI:** Generate controllers, migrations, and seeders, inspect routes (`gas route:list`), or handle `clasp` initialization, push, pull, and Web App deployments from one tool.
 - **Zero-HTTP-Bootstrap Security:** Workspace provisioning (`setupWorkspace`) is completely isolated from public `doGet`/`doPost` routes, guarded by `LockService` and owner-only execution (`access: MYSELF`).
 - **V8 Load-Order Resilience:** Combines deterministic `filePushOrder` with lazy `Proxy` controller instantiation to prevent `ReferenceError` / `TypeError` caused by GAS V8 file evaluation order.
-- **Schema Migrations & Seeders:** Version-controlled table creation, column alterations, batch rollbacks, soft deletes (`deleted_at`), and idempotent seeders.
-- **CORS-Safe Universal JSON Envelope:** Standardized `POST` payload (`action`, `session`, `id`, `data`, `options`) engineered to avoid HTTP `OPTIONS` preflight failures in GAS Web Apps.
-- **Built-In Auth & PBKDF2 Hashing:** Salted PBKDF2 password hashing (`Hash.make`, `Hash.check`, `Hash.needsRehash`), session token middleware, and automatic password field redaction.
+- **Schema Migrations, Seeders & ORM:** Version-controlled table creation, column alterations, batch rollbacks, soft deletes (`deleted_at`) with `restore()` and `forceDelete()`, `bulkCreate()`, `find()`, multi-level indexing cache, and idempotent seeders.
+- **Validation & Lifecycle Hooks:** Built-in `Validator.make(data, rules)` helper and `BaseController` lifecycle hooks (`beforeStore`, `afterStore`, `beforeUpdate`, `afterUpdate`, `beforeDestroy`, `afterDestroy`).
+- **CORS-Safe Universal JSON Envelope:** Standardized `POST` payload (`action`, `session`, `id`, `data`) engineered to avoid HTTP `OPTIONS` preflight failures in GAS Web Apps.
+- **Built-In Auth, TTL & Rate Limiting:** Salted PBKDF2 password hashing (`Hash.make`, `Hash.check`, `Hash.needsRehash`), session expiration (`session_expires_at`), `throttle` middleware, and automatic password field redaction.
 
 ---
 
@@ -49,22 +50,23 @@
     ├── config/
     │   └── config.js           # Lazy ScriptProperties getter & WorkspaceSetup provisioner
     ├── core/
-    │   ├── Controller_Base.js  # Base CRUD controller with relational eager loading
-    │   ├── Core_Router.js      # Route registration & dispatching engine
+    │   ├── Controller_Base.js  # Base CRUD controller with hooks, soft delete & relations
+    │   ├── Core_Router.js      # Route registration, middleware & dispatching engine
     │   ├── Database_Migration.js
     │   ├── Database_Seeder.js
-    │   ├── crud.js             # Spreadsheet query & mutation engine
+    │   ├── crud.js             # Spreadsheet query, index cache, lock & mutation engine
     │   ├── database.js         # Spreadsheet connection & sheet resolver
-    │   ├── foglobal.js         # Global response & utility helpers
+    │   ├── foglobal.js         # Validator, sanitizer, response & utility helpers
     │   └── hash.js             # PBKDF2 password hashing & verification
     ├── database/
     │   ├── migrations/         # Timestamped schema migration files
     │   └── seeders/            # Database seeder definitions
     ├── middleware/
-    │   └── middleware.js       # Session authentication & request guards
+    │   └── middleware.js       # Session authentication & expiration guards
     ├── routes/
-    │   └── routes.js           # API route definitions
+    │   └── api.js              # API route definitions
     └── tools/
+        ├── CodeGenerator.js    # GAS Web Editor module/migration/controller generator
         └── DevTools.js         # Owner-only diagnostic & auth verification helpers
 ```
 
@@ -124,7 +126,7 @@ Create a complete CRUD resource from scratch in four steps:
    });
    ```
 
-3. **Register the resource route in `src/routes/routes.js`:**
+3. **Register the resource route in `src/routes/api.js`:**
    ```javascript
    Route.resource("projects", "ProjectController");
    ```
@@ -150,7 +152,7 @@ gas init "My GAS Backend"
 ```bash
 gas deploy "v1.0.0"
 ```
-This pushes `src/` to Google Apps Script, publishes a versioned Web App deployment, and outputs your production URL (`https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec`).
+This pushes `src/` to Google Apps Script, publishes a versioned Web App deployment, and outputs your production URL (`[https://script.google.com/macros/s/](https://script.google.com/macros/s/)<DEPLOYMENT_ID>/exec`).
 
 ### 3. One-Time Workspace Provisioning (Owner-Only)
 Because public HTTP routes are locked against unauthenticated bootstrapping:
@@ -198,7 +200,7 @@ gas deploy "v1.0.1"
 | `gas make:controller <Name> [-r\|--plain]` | Create a lazy-Proxy resource controller (`-r`, default) or plain controller (`--plain`). |
 | `gas make:seeder <Name>` | Create a seeder file in `src/database/seeders/`. |
 
-### Local Database & Migrations
+### Local Database, Routing & Diagnostics
 
 | Command | Description |
 | :--- | :--- |
@@ -207,16 +209,18 @@ gas deploy "v1.0.1"
 | `gas migrate:rollback` | Roll back the last migration batch. |
 | `gas migrate:status` | List all migrations and their execution status. |
 | `gas db:seed` | Execute registered seeders via `DatabaseSeeder`. |
+| `gas db:reindex` | Rebuild local schema metadata and row lookup indexes. |
+| `gas route:list [Filter] [--method <HTTP>]` | Display all registered routes, HTTP methods, actions, middlewares, and sheets. |
 
 ---
 
 ## API Request & Payload Convention
 
-Google Apps Script Web Apps dispatch routes via the `route` query parameter (`?route=<path>`). Because GAS does not support HTTP `OPTIONS` preflight requests, all mutations and authenticated queries use a standardized JSON envelope over `POST`.
+Google Apps Script Web Apps dispatch routes via the `route` query parameter (`?route=<path>`). When `?route` is omitted, requests automatically resolve to the root route (`""` or `"/"`). Because GAS does not support HTTP `OPTIONS` preflight requests, all mutations use a standardized JSON envelope over `POST`.
 
 ### 1. Health Check (`GET`)
 ```http
-GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<DEPLOYMENT_ID>/exec
+GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec
 ```
 
 ### 2. Authentication (`POST ?route=auth/login`)
@@ -227,7 +231,12 @@ GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<D
 }
 ```
 
-### 3. Universal CRUD Envelope (`POST ?route=<resource>`)
+### 3. Query & Pagination (`GET ?route=<resource>`)
+```http
+GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?route=users&session={{session}}&page=1&per_page=15&sort=-id
+```
+
+### 4. Universal Mutation Envelope (`POST ?route=<resource>`)
 
 **Create Record (`action: "create"`):**
 ```json
@@ -246,14 +255,14 @@ GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<D
 {
     "action": "update",
     "session": "{{session}}",
-    "id": 1,
     "data": {
+        "id": 1,
         "name": "Acme Global Ltd."
     }
 }
 ```
 
-**Delete Record (`action: "delete"`):**
+**Soft Delete Record (`action: "delete"`):**
 ```json
 {
     "action": "delete",
@@ -262,17 +271,21 @@ GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<D
 }
 ```
 
-**Complex Query / Eager Loading (`action: "read"`):**
+**Restore Soft-Deleted Record (`action: "restore"`):**
 ```json
 {
-    "action": "read",
+    "action": "restore",
     "session": "{{session}}",
-    "options": {
-        "with": ["users"],
-        "page": 1,
-        "limit": 15,
-        "with_trashed": false
-    }
+    "id": 1
+}
+```
+
+**Permanently Delete Record (`action: "force-delete"`):**
+```json
+{
+    "action": "force-delete",
+    "session": "{{session}}",
+    "id": 1
 }
 ```
 
