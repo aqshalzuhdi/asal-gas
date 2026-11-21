@@ -1,0 +1,27 @@
+{
+    "scriptId": "ISI_SCRIPT_ID_PROJECT_GAS_KAMU",
+    "rootDir": "./src",
+    "scriptExtensions": [
+        ".js",
+        ".gs"
+    ],
+    "htmlExtensions": [
+        ".html"
+    ],
+    "jsonExtensions": [
+        ".json"
+    ],
+    "filePushOrder": [
+        "src/config/config.js",
+        "src/core/database.js",
+        "src/core/foglobal.js",
+        "src/core/hash.js",
+        "src/core/crud.js",
+        "src/core/Core_Router.js",
+        "src/core/Database_Migration.js",
+        "src/core/Database_Seeder.js",
+        "src/core/Controller_Base.js",
+        "src/middleware/middleware.js"
+    ],
+    "skipSubdirectories": false
+}

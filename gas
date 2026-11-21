@@ -1,0 +1,717 @@
+#!/usr/bin/env node
+const fs = require("fs");
+const path = require("path");
+const { execSync } = require("child_process");
+const { bootGasRuntime } = require("./local/runtime/GasLoader");
+const { DB_FILE } = require("./local/runtime/GasMocks");
+
+const [, , command, ...rawArgs] = process.argv;
+const flags = rawArgs.filter((a) => a.startsWith("-"));
+const positionalArgs = rawArgs.filter((a) => !a.startsWith("-"));
+const arg1 = positionalArgs[0];
+
+const ROOT_DIR = __dirname;
+const SRC_DIR = path.join(ROOT_DIR, "src");
+const CLASP_FILE = path.join(ROOT_DIR, ".clasp.json");
+
+const DEFAULT_FILE_PUSH_ORDER = [
+    "src/config/config.js",
+    "src/core/database.js",
+    "src/core/foglobal.js",
+    "src/core/hash.js",
+    "src/core/crud.js",
+    "src/core/Core_Router.js",
+    "src/core/Database_Migration.js",
+    "src/core/Database_Seeder.js",
+    "src/core/Controller_Base.js",
+    "src/middleware/middleware.js"
+];
+
+function toPascalCase(str) {
+    return String(str || "")
+        .replace(/[^a-zA-Z0-9]+/g, " ")
+        .trim()
+        .split(/\s+/)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join("");
+}
+
+function toSnakeCase(str) {
+    return String(str || "")
+        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+        .replace(/[^a-zA-Z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .toLowerCase();
+}
+
+function pluralizeSnake(singular) {
+    if (/[^aeiou]y$/.test(singular)) return singular.replace(/y$/, "ies");
+    if (/(s|x|z|ch|sh)$/.test(singular)) return singular + "es";
+    return singular + "s";
+}
+
+function timestamp() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}_${pad(d.getMonth() + 1)}_${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+function getFlagValue(flagName) {
+    const idx = rawArgs.indexOf(flagName);
+    if (idx !== -1 && rawArgs[idx + 1] && !rawArgs[idx + 1].startsWith("-")) {
+        return rawArgs[idx + 1];
+    }
+    const prefix = `${flagName}=`;
+    const inline = rawArgs.find((a) => a.startsWith(prefix));
+    return inline ? inline.slice(prefix.length) : null;
+}
+
+function runClaspCommand(claspCmd) {
+    try {
+        execSync(`npx clasp ${claspCmd}`, { stdio: "inherit", cwd: ROOT_DIR });
+    } catch (err) {
+        process.exit(err.status || 1);
+    }
+}
+
+function ensureClaspConfigured() {
+    if (!fs.existsSync(CLASP_FILE)) {
+        console.error('❌ .clasp.json not found. Run "gas init" or "gas init --id <SCRIPT_ID>" first.');
+        process.exit(1);
+    }
+}
+
+function readClaspConfig() {
+    ensureClaspConfigured();
+    return JSON.parse(fs.readFileSync(CLASP_FILE, "utf8"));
+}
+
+function writeClaspConfig(cfg) {
+    fs.writeFileSync(CLASP_FILE, JSON.stringify(cfg, null, 4) + "\n", "utf8");
+}
+
+function initGasProject(titleInput) {
+    const isForce = flags.includes("-f") || flags.includes("--force");
+    const existingScriptId = getFlagValue("--id");
+
+    if (fs.existsSync(CLASP_FILE) && !isForce) {
+        console.error("⚠️  .clasp.json already exists. Use --force to overwrite the existing GAS configuration.");
+        process.exit(1);
+    }
+
+    if (existingScriptId) {
+        const claspConfig = {
+            scriptId: existingScriptId.trim(),
+            rootDir: "./src",
+            scriptExtensions: [".js", ".gs"],
+            htmlExtensions: [".html"],
+            jsonExtensions: [".json"],
+            filePushOrder: DEFAULT_FILE_PUSH_ORDER,
+            skipSubdirectories: false
+        };
+        writeClaspConfig(claspConfig);
+        console.log(`✅ Linked .clasp.json to Script ID: ${claspConfig.scriptId}`);
+        return;
+    }
+
+    const projectTitle = (titleInput || "Asal-GAS Backend").replace(/"/g, "");
+    const manifestPath = path.join(SRC_DIR, "appsscript.json");
+    const manifestBackup = fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, "utf8") : null;
+
+    console.log(`🚀 Creating Google Apps Script project "${projectTitle}"...`);
+    runClaspCommand(`create --type standalone --title "${projectTitle}" --rootDir ./src`);
+
+    const nestedClaspFile = path.join(SRC_DIR, ".clasp.json");
+    if (!fs.existsSync(CLASP_FILE) && fs.existsSync(nestedClaspFile)) {
+        fs.renameSync(nestedClaspFile, CLASP_FILE);
+    }
+
+    if (fs.existsSync(CLASP_FILE)) {
+        const currentCfg = JSON.parse(fs.readFileSync(CLASP_FILE, "utf8"));
+        currentCfg.rootDir = "./src";
+        currentCfg.filePushOrder = DEFAULT_FILE_PUSH_ORDER;
+        currentCfg.skipSubdirectories = false;
+        writeClaspConfig(currentCfg);
+    }
+
+    if (manifestBackup !== null) {
+        fs.writeFileSync(manifestPath, manifestBackup, "utf8");
+    }
+
+    console.log("✅ GAS project ready! Run 'gas push' or 'gas deploy' to upload source code.");
+}
+
+function openGasEditor() {
+    const cfg = readClaspConfig();
+    const scriptId = (cfg.scriptId || "").trim();
+
+    if (!scriptId || scriptId === "PASTE_YOUR_GAS_SCRIPT_ID_HERE") {
+        console.error('❌ scriptId in .clasp.json is missing. Run "gas init" first.');
+        process.exit(1);
+    }
+
+    const editorUrl = `https://script.google.com/d/${scriptId}/edit`;
+    console.log(`🔗 Opening GAS Editor: ${editorUrl}`);
+
+    const openCmd = process.platform === "win32"
+        ? `start "" "${editorUrl}"`
+        : process.platform === "darwin"
+            ? `open "${editorUrl}"`
+            : `xdg-open "${editorUrl}"`;
+
+    try {
+        execSync(openCmd, { stdio: "ignore" });
+    } catch (_) { }
+}
+
+function resolveWebAppDeployment(cfg) {
+    if (cfg.deploymentId && cfg.webAppUrl) {
+        return { deploymentId: cfg.deploymentId, webAppUrl: cfg.webAppUrl };
+    }
+
+    try {
+        const output = execSync("npx clasp deployments", { cwd: ROOT_DIR, encoding: "utf8" });
+        const matches = [...output.matchAll(/-\s+(AKfycb[a-zA-Z0-9_-]+)\s+@(\d+)/g)];
+        if (matches.length > 0) {
+            matches.sort((a, b) => Number(b[2]) - Number(a[2]));
+            const deploymentId = matches[0][1];
+            const webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec`;
+            cfg.deploymentId = deploymentId;
+            cfg.webAppUrl = webAppUrl;
+            writeClaspConfig(cfg);
+            return { deploymentId, webAppUrl };
+        }
+    } catch (_) { }
+
+    return null;
+}
+
+function tryClaspRun(fnName, payloadObj) {
+    try {
+        const argsPart = payloadObj
+            ? ` -p "${JSON.stringify([payloadObj]).replace(/"/g, '\\"')}"`
+            : "";
+        const rawOut = execSync(`npx clasp run ${fnName}${argsPart}`, {
+            cwd: ROOT_DIR,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"]
+        });
+
+        const jsonLine = rawOut.split(/\r?\n/).find((l) => l.trim().startsWith("{"));
+        return jsonLine ? JSON.parse(jsonLine) : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function printSetupSummary(info, fallbackUrl) {
+    console.log("\n========================================================");
+    console.log("📋 SCRIPT PROPERTIES SUMMARY (INITIALIZED)");
+    console.log("========================================================");
+    console.log(`SHEET_ID   : ${info.SHEET_ID || "(Not set)"}`);
+    console.log(`BASE_URL   : ${info.BASE_URL || fallbackUrl || "(Not set)"}`);
+    if (info.SHEET_URL) {
+        console.log(`Spreadsheet: ${info.SHEET_URL}`);
+    }
+    console.log("========================================================\n");
+}
+
+function printManualSetupReminder(webAppUrl) {
+    console.log("\n========================================================");
+    console.log("📋 GAS WORKSPACE INITIALIZATION (ONE-TIME SETUP)");
+    console.log("========================================================");
+    console.log("Public HTTP routes are locked (zero-bootstrap) for security.");
+    console.log("Run initial setup once as the script owner:");
+    console.log("1. Run 'gas open' to launch the GAS Web Editor.");
+    console.log("2. Select 'setupWorkspace' from the toolbar -> click Run -> Allow.");
+    if (webAppUrl) {
+        console.log("3. In Project Settings -> Script Properties, verify BASE_URL is set to:");
+        console.log(`   ${webAppUrl}`);
+    }
+    console.log("--------------------------------------------------------");
+    console.log("💡 This reminder will not appear again on subsequent runs.");
+    console.log("   (Pass --setup to display it again)");
+    console.log("========================================================\n");
+}
+
+function pushAndSyncGas() {
+    const cfg = readClaspConfig();
+    const forceFlag = flags.includes("-f") || flags.includes("--force") ? " -f" : "";
+    const shouldSeed = flags.includes("--seed");
+    const showSetup = flags.includes("--setup");
+
+    runClaspCommand(`push${forceFlag}`);
+
+    const remoteRes = tryClaspRun("setupWorkspace", {
+        migrate: true,
+        seed: shouldSeed,
+        webAppUrl: cfg.webAppUrl || ""
+    });
+
+    if (remoteRes && remoteRes.status) {
+        console.log(`✅ Remote Migrate: ${JSON.stringify(remoteRes.migration)}`);
+        if (remoteRes.seeder) {
+            console.log(`🌱 Remote Seeder : ${JSON.stringify(remoteRes.seeder)}`);
+        }
+        if (remoteRes.first_setup || !remoteRes.SHEET_ID || showSetup) {
+            printSetupSummary(remoteRes, cfg.webAppUrl);
+        }
+        cfg.initialized = true;
+        writeClaspConfig(cfg);
+        return;
+    }
+
+    if (!cfg.initialized || showSetup) {
+        printManualSetupReminder(cfg.webAppUrl);
+        cfg.initialized = true;
+        writeClaspConfig(cfg);
+    }
+}
+
+function deployGasWebApp(description) {
+    const cfg = readClaspConfig();
+    const desc = (description || "Deploy via GAS CLI").replace(/"/g, "");
+    const showSetup = flags.includes("--setup");
+
+    console.log("📦 Pushing latest code to Google Apps Script...");
+    runClaspCommand("push -f");
+
+    const existing = resolveWebAppDeployment(cfg);
+    const deployCmd = existing
+        ? `deploy -i ${existing.deploymentId} -d "${desc}"`
+        : `deploy -d "${desc}"`;
+
+    console.log(existing
+        ? `🔄 Updating Web App deployment (${existing.deploymentId})...`
+        : "🚀 Creating new Web App deployment...");
+
+    let deploymentId = existing?.deploymentId || "";
+    try {
+        const out = execSync(`npx clasp ${deployCmd}`, { cwd: ROOT_DIR, encoding: "utf8" });
+        process.stdout.write(out);
+
+        const match = out.match(/(AKfycb[a-zA-Z0-9_-]+)/);
+        if (match) deploymentId = match[1];
+    } catch (err) {
+        process.exit(err.status || 1);
+    }
+
+    if (!deploymentId) {
+        console.error("❌ Failed to retrieve Deployment ID from clasp output.");
+        process.exit(1);
+    }
+
+    const webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec`;
+    cfg.deploymentId = deploymentId;
+    cfg.webAppUrl = webAppUrl;
+    writeClaspConfig(cfg);
+    console.log(`🌐 Web App URL: ${webAppUrl}`);
+
+    const bootRes = tryClaspRun("setupWorkspace", { webAppUrl });
+    if (bootRes && bootRes.status) {
+        if (bootRes.first_setup || !bootRes.SHEET_ID || showSetup) {
+            printSetupSummary(bootRes, webAppUrl);
+        }
+        cfg.initialized = true;
+        writeClaspConfig(cfg);
+        return;
+    }
+
+    if (!cfg.initialized || showSetup) {
+        printManualSetupReminder(webAppUrl);
+        cfg.initialized = true;
+        writeClaspConfig(cfg);
+    }
+}
+
+function writeSrcFile(relPath, content) {
+    const target = path.join(SRC_DIR, relPath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (fs.existsSync(target)) {
+        console.log(`[SKIPPED] src/${relPath} already exists.`);
+        return;
+    }
+    fs.writeFileSync(target, content, "utf8");
+    console.log(`[CREATED] src/${relPath}`);
+}
+
+function createMigration(rawName) {
+    const pascalName = toPascalCase(rawName);
+    const snakeName = toSnakeCase(pascalName);
+    const ts = timestamp();
+    const migrationId = `${ts}_${snakeName}`;
+    const filename = `Migration_${ts}_${pascalName}.js`;
+
+    const createMatch = snakeName.match(/^create_(.+)_table$/);
+    const addColMatch = snakeName.match(/^add_(.+)_to_(.+)_table$/);
+    const dropColMatch = snakeName.match(/^(?:drop|remove)_(.+)_from_(.+)_table$/);
+
+    let body;
+    if (createMatch) {
+        const tableName = createMatch[1];
+        body = `Migration.register({
+    name: "${migrationId}",
+
+    up: function () {
+        Schema.create("${tableName}", function (table) {
+            table.id();
+            table.string("name");
+            table.timestamps();
+            table.softDeletes();
+        });
+    },
+
+    down: function () {
+        Schema.dropIfExists("${tableName}");
+    }
+});
+`;
+    } else if (addColMatch) {
+        const [, colName, targetTable] = addColMatch;
+        body = `Migration.register({
+    name: "${migrationId}",
+
+    up: function () {
+        Schema.table("${targetTable}", function (table) {
+            table.string("${colName}");
+        });
+    },
+
+    down: function () {
+        Schema.table("${targetTable}", function (table) {
+            table.dropColumn("${colName}");
+        });
+    }
+});
+`;
+    } else if (dropColMatch) {
+        const [, droppedCol, fromTable] = dropColMatch;
+        body = `Migration.register({
+    name: "${migrationId}",
+
+    up: function () {
+        Schema.table("${fromTable}", function (table) {
+            table.dropColumn("${droppedCol}");
+        });
+    },
+
+    down: function () {
+        Schema.table("${fromTable}", function (table) {
+            table.string("${droppedCol}");
+        });
+    }
+});
+`;
+    } else {
+        body = `Migration.register({
+    name: "${migrationId}",
+
+    up: function () {
+        Schema.table("table_name", function (table) {
+            // table.string("new_column").after("id");
+        });
+    },
+
+    down: function () {
+        Schema.table("table_name", function (table) {
+            // table.dropColumn("new_column");
+        });
+    }
+});
+`;
+    }
+
+    writeSrcFile(`database/migrations/${filename}`, body);
+}
+
+function createController(rawName, ctrlFlags = []) {
+    const className = toPascalCase(rawName);
+    const baseEntity = className.replace(/Controller$/, "") || className;
+    const tableName = pluralizeSnake(toSnakeCase(baseEntity));
+    const isPlain = ctrlFlags.includes("-p") || ctrlFlags.includes("--plain");
+
+    const content = isPlain
+        ? `var ${className} = {
+    index: function (ctx) {
+        return { status: true, data: [] };
+    }
+};
+`
+        : `var ${className} = (function () {
+    var _instance;
+    return new Proxy({}, {
+        get: function (_, prop) {
+            if (!_instance) {
+                _instance = BaseController.init({
+                    sheet: "${tableName}",
+                    with: [],
+
+                    // Optional lifecycle hooks (beforeStore, afterStore, beforeUpdate, afterUpdate, beforeDestroy, afterDestroy):
+                    // beforeStore: function (ctx) {
+                    //     return { status: true };
+                    // },
+                    //
+                    // Or override resource methods (index, store, update, destroy, restore, forceDelete):
+                    // store: function (ctx) {
+                    //     return this.superStore(ctx);
+                    // }
+                });
+            }
+            var val = _instance[prop];
+            return typeof val === "function" ? val.bind(_instance) : val;
+        }
+    });
+})();
+`;
+
+    writeSrcFile(`app/Controllers/${className}.js`, content);
+
+    if (isPlain) {
+        console.log(`👉 Register in src/routes/api.js -> Route.get("${toSnakeCase(baseEntity)}", "${className}@index");`);
+    } else {
+        console.log(`👉 Register in src/routes/api.js -> Route.resource("${tableName}", "${className}");`);
+    }
+}
+
+function createSeeder(rawName) {
+    const entity = toPascalCase(rawName).replace(/Seeder$/, "");
+    const tableName = pluralizeSnake(toSnakeCase(entity));
+    const seederName = `${entity}Seeder`;
+
+    const content = `Seeder.register("${seederName}", {
+    run: function () {
+        var records = [
+            // { name: "Sample Record" }
+        ];
+
+        for (var i = 0; i < records.length; i++) {
+            var res = create("${tableName}", { data: records[i] });
+            if (!res.status) throw new Error(res.message);
+        }
+
+        return { table: "${tableName}", count: records.length };
+    }
+});
+`;
+    writeSrcFile(`database/seeders/Seeder_${entity}.js`, content);
+}
+
+function listRoutes() {
+    bootGasRuntime();
+
+    if (!global.Route || typeof global.Route.list !== "function") {
+        console.error("❌ Route.list() is not available. Add Route.list() to src/core/Core_Router.js first.");
+        process.exit(1);
+    }
+
+    const filterQuery = (arg1 || "").trim().toLowerCase();
+    const methodFilter = (getFlagValue("--method") || "").trim().toUpperCase();
+
+    let routes = global.Route.list();
+
+    if (methodFilter) {
+        routes = routes.filter((item) =>
+            item.methods.toUpperCase().split("|").includes(methodFilter)
+        );
+    }
+
+    if (filterQuery) {
+        routes = routes.filter((item) =>
+            item.route.toLowerCase().includes(filterQuery) ||
+            item.handler.toLowerCase().includes(filterQuery) ||
+            item.action.toLowerCase().includes(filterQuery) ||
+            item.middleware.toLowerCase().includes(filterQuery)
+        );
+    }
+
+    if (routes.length === 0) {
+        console.log("No matching routes found.");
+        return;
+    }
+
+    const headers = {
+        methods: "METHOD",
+        route: "ROUTE",
+        action: "ACTION",
+        handler: "HANDLER",
+        middleware: "MIDDLEWARE",
+        sheet: "SHEET"
+    };
+
+    const colWidths = {
+        methods: Math.max(headers.methods.length, ...routes.map((r) => r.methods.length)),
+        route: Math.max(headers.route.length, ...routes.map((r) => r.route.length)),
+        action: Math.max(headers.action.length, ...routes.map((r) => r.action.length)),
+        handler: Math.max(headers.handler.length, ...routes.map((r) => r.handler.length)),
+        middleware: Math.max(headers.middleware.length, ...routes.map((r) => r.middleware.length)),
+        sheet: Math.max(headers.sheet.length, ...routes.map((r) => r.sheet.length))
+    };
+
+    const pad = (val, width) => String(val).padEnd(width, " ");
+    const separator = [
+        "-".repeat(colWidths.methods),
+        "-".repeat(colWidths.route),
+        "-".repeat(colWidths.action),
+        "-".repeat(colWidths.handler),
+        "-".repeat(colWidths.middleware),
+        "-".repeat(colWidths.sheet)
+    ].join("-+-");
+
+    const formatRow = (row) => [
+        pad(row.methods, colWidths.methods),
+        pad(row.route, colWidths.route),
+        pad(row.action, colWidths.action),
+        pad(row.handler, colWidths.handler),
+        pad(row.middleware, colWidths.middleware),
+        pad(row.sheet, colWidths.sheet)
+    ].join(" | ");
+
+    console.log("");
+    console.log(formatRow(headers));
+    console.log(separator);
+    routes.forEach((row) => console.log(formatRow(row)));
+    console.log(`\nTotal routes: ${routes.length}\n`);
+}
+
+switch (command) {
+    case "init":
+    case "clasp:create":
+        initGasProject(arg1);
+        break;
+
+    case "login":
+        runClaspCommand("login");
+        break;
+
+    case "push":
+    case "clasp:push":
+        pushAndSyncGas();
+        break;
+
+    case "pull":
+    case "clasp:pull":
+        ensureClaspConfigured();
+        runClaspCommand("pull");
+        break;
+
+    case "status":
+        ensureClaspConfigured();
+        runClaspCommand("show-file-status");
+        break;
+
+    case "open":
+        openGasEditor();
+        break;
+
+    case "deploy":
+        deployGasWebApp(arg1);
+        break;
+
+    case "make:module": {
+        if (!arg1) {
+            console.error("Usage: gas make:module Project [-r|--plain]");
+            process.exit(1);
+        }
+        const entity = toPascalCase(arg1).replace(/(Controller|Seeder)$/, "");
+        const tablePascal = toPascalCase(pluralizeSnake(toSnakeCase(entity)));
+        createMigration(`Create${tablePascal}Table`);
+        createSeeder(entity);
+        createController(`${entity}Controller`, flags);
+        break;
+    }
+
+    case "make:migration":
+        if (!arg1) {
+            console.error("Usage: gas make:migration CreateProjectsTable");
+            process.exit(1);
+        }
+        createMigration(arg1);
+        break;
+
+    case "make:controller":
+        if (!arg1) {
+            console.error("Usage: gas make:controller CompanyController [-r|--plain]");
+            process.exit(1);
+        }
+        createController(arg1, flags);
+        break;
+
+    case "make:seeder":
+        if (!arg1) {
+            console.error("Usage: gas make:seeder ProjectSeeder");
+            process.exit(1);
+        }
+        createSeeder(arg1);
+        break;
+
+    case "db:reindex": {
+        bootGasRuntime();
+        console.log(global.rebuildAllIndexes());
+        break;
+    }
+
+    case "migrate": {
+        bootGasRuntime();
+        console.log(global.migrate());
+        if (flags.includes("--seed")) console.log(global.dbSeed());
+        break;
+    }
+
+    case "migrate:fresh": {
+        fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+        fs.writeFileSync(DB_FILE, JSON.stringify({ sheets: {} }, null, 2));
+        bootGasRuntime();
+        console.log(global.migrateFresh());
+        if (flags.includes("--seed")) console.log(global.dbSeed());
+        break;
+    }
+
+    case "migrate:rollback": {
+        bootGasRuntime();
+        console.log(global.migrateRollback());
+        break;
+    }
+
+    case "migrate:status": {
+        bootGasRuntime();
+        global.migrateStatus();
+        break;
+    }
+
+    case "db:seed": {
+        bootGasRuntime();
+        console.log(global.dbSeed());
+        break;
+    }
+
+    case "route:list":
+        listRoutes();
+        break;
+
+    default:
+        console.log(`
+Asal-GAS CLI:
+  gas init [Title] [--id <ScriptId>] [-f]        # Create a new GAS project (or link ID) & setup .clasp.json
+  gas login                                      # Authenticate Google account via clasp
+  gas push [-f|--force] [--seed] [--setup]       # Push src/ to GAS + private OAuth sync (MYSELF)
+  gas pull                                       # Pull remote source code from GAS into src/
+  gas status                                     # Check local vs remote file status
+  gas open                                       # Open project in Google Apps Script Web Editor
+  gas deploy [Description] [--setup]             # Push & create/update production Web App deployment
+
+  gas make:module <Entity> [-r|--plain]          # Generate Migration + Seeder + Controller
+  gas make:migration <Name>                      # Create migration in src/database/migrations/
+  gas make:controller <Name> [-r|--plain]        # Create controller in src/app/Controllers/<Name>.js
+  gas make:seeder <Name>                         # Create seeder in src/database/seeders/
+
+  gas migrate [--seed]                           # Run pending migrations locally
+  gas migrate:fresh [--seed]                     # Reset local db.json & re-run all migrations
+  gas migrate:rollback                           # Roll back the last migration batch
+  gas migrate:status                             # Display migration status
+
+  gas db:seed                                    # Run DatabaseSeeder
+  gas db:reindex                                 # Rebuild local schema metadata and row indexes
+
+  gas route:list [Filter] [--method <HTTP>]      # List registered API routes and middlewares
+`);
+}

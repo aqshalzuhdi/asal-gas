@@ -1,0 +1,23 @@
+{
+    "name": "asal-gas",
+    "version": "1.0.0",
+    "bin": {
+        "gas": "./gas"
+    },
+    "scripts": {
+        "dev": "nodemon --watch src --watch local --ext js,json local/server.js",
+        "migrate": "node gas migrate",
+        "migrate:fresh": "node gas migrate:fresh",
+        "migrate:fresh:seed": "node gas migrate:fresh --seed",
+        "migrate:rollback": "node gas migrate:rollback",
+        "migrate:status": "node gas migrate:status",
+        "db:seed": "node gas db:seed",
+        "push": "clasp push",
+        "status": "clasp show-file-status"
+    },
+    "dev": "nodemon --watch src --watch local --ignore local/storage/ --ext js,json local/server.js",
+    "devDependencies": {
+        "@google/clasp": "^3.4.1",
+        "nodemon": "^3.1.14"
+    }
+}
