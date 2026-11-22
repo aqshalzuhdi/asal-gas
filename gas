@@ -1366,6 +1366,80 @@ function listRoutes() {
     console.log(`\nTotal routes: ${routes.length}\n`);
 }
 
+function updateFrameworkFromRemote() {
+    const remoteName = getFlagValue("--remote") || "framework";
+    const branch = getFlagValue("--branch") || "main";
+    const repoUrl = getFlagValue("--repo") || "https://github.com/aqshalzuhdi/asal-gas.git";
+    const dryRun = flags.includes("--dry-run");
+
+    const protectedPaths = [
+        "src/routes/api.js",
+        "src/app/Controllers",
+        "src/database/migrations",
+        "src/database/seeders",
+        ".clasp.json",
+        "creds.json",
+        ".clasprc.json",
+        "local/storage/db.json"
+    ];
+
+    const frameworkTargets = [
+        "gas",
+        "src/core",
+        "src/middleware",
+        "src/config/config.js"
+    ];
+
+    const remotesRaw = execSync("git remote", { cwd: ROOT_DIR, encoding: "utf8" });
+    const remotes = remotesRaw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+
+    if (!remotes.includes(remoteName)) {
+        console.log(`➕ Adding remote '${remoteName}' -> ${repoUrl}`);
+        execSync(`git remote add ${remoteName} ${repoUrl}`, { cwd: ROOT_DIR, stdio: "inherit" });
+    }
+
+    console.log(`🔄 Fetching latest changes from ${remoteName}/${branch}...`);
+    execSync(`git fetch ${remoteName} ${branch}`, { cwd: ROOT_DIR, stdio: "inherit" });
+
+    const sourceRef = `${remoteName}/${branch}`;
+    const existingTargets = frameworkTargets.filter((target) => {
+        const check = spawnSync("git", ["cat-file", "-e", `${sourceRef}:${target}`], {
+            cwd: ROOT_DIR,
+            stdio: "ignore"
+        });
+        return check.status === 0;
+    });
+
+    if (existingTargets.length === 0) {
+        console.error(`❌ No framework files found at ${sourceRef}.`);
+        process.exit(1);
+    }
+
+    console.log("🛡️  Protected project files (untouched):");
+    protectedPaths.forEach((p) => console.log(`   - ${p}`));
+
+    console.log("📦 Updating framework files:");
+    existingTargets.forEach((t) => console.log(`   - ${t}`));
+
+    if (dryRun) {
+        console.log("\nℹ️  Dry run selesai. Tidak ada file yang diubah.");
+        return;
+    }
+
+    for (const target of existingTargets) {
+        execSync(`git checkout ${sourceRef} -- "${target}"`, { cwd: ROOT_DIR, stdio: "inherit" });
+    }
+
+    // Pastikan file khusus project tidak ikut terbawa bila ada di dalam folder target
+    for (const prot of protectedPaths) {
+        if (fs.existsSync(path.join(ROOT_DIR, prot))) {
+            spawnSync("git", ["checkout", "--", prot], { cwd: ROOT_DIR, stdio: "ignore" });
+        }
+    }
+
+    console.log("\n✅ Framework files updated. Review 'git status' & 'git diff', then commit changes.");
+}
+
 (async function main() {
     switch (command) {
         case "init":
@@ -1588,6 +1662,10 @@ function listRoutes() {
             break;
         }
 
+        case "framework:update":
+            updateFrameworkFromRemote();
+            break;
+
         case "route:list":
             listRoutes();
             break;
@@ -1603,6 +1681,7 @@ Asal-GAS CLI:
   gas status                                               # Check local vs remote file status
   gas open                                                 # Open project in Google Apps Script Web Editor
   gas deploy [Description] [--migrate] [--seed] [--setup]  # Push, deploy Web App & optionally run remote migrate/seed
+  gas framework:update [--dry-run] [--remote <name>]       # Sync core & CLI files from asal-gas without touching project files
 
   gas make:module <Entity> [-r|--plain]                    # Generate Migration + Seeder + Controller
   gas make:migration <Name>                                # Create migration in src/database/migrations/
