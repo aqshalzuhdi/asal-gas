@@ -20,12 +20,12 @@ function extractSessionToken(requestObject, isPost) {
 function middlewareAuth(requestObject, isPost) {
     var providedKey = extractSessionToken(requestObject, Boolean(isPost));
     if (!providedKey) {
-        return { status: false, code: 401, message: "Unauthorized" };
+        return failResponse("Unauthorized", 401);
     }
 
     var rows = typeof sheetRowsCached === "function" ? sheetRowsCached("users") : sheetRows("users");
     if (!rows || rows.length < 2) {
-        return { status: false, code: 401, message: "Unauthorized" };
+        return failResponse("Unauthorized", 401);
     }
 
     var headers = rows[0].map(function (h, idx) {
@@ -36,7 +36,7 @@ function middlewareAuth(requestObject, isPost) {
 
     var sessionIndex = headers.indexOf("session");
     if (sessionIndex === -1) {
-        return { status: false, code: 500, message: "Internal error: column 'session' not found." };
+        return failResponse("Internal error: column 'session' not found.", 500);
     }
 
     var deletedAtIndex = headers.indexOf("deleted_at");
@@ -55,7 +55,7 @@ function middlewareAuth(requestObject, isPost) {
                 row[deletedAtIndex] !== null &&
                 row[deletedAtIndex] !== undefined
             ) {
-                return { status: false, code: 401, message: "Unauthorized" };
+                return failResponse("Unauthorized", 401);
             }
 
             if (
@@ -66,7 +66,7 @@ function middlewareAuth(requestObject, isPost) {
             ) {
                 var expiresTs = parseDateValue(row[expiresAtIndex]);
                 if (expiresTs !== null && Date.now() > expiresTs) {
-                    return { status: false, code: 401, message: "Session expired." };
+                    return failResponse("Session expired.", 401);
                 }
             }
 
@@ -85,5 +85,5 @@ function middlewareAuth(requestObject, isPost) {
         }
     }
 
-    return { status: false, code: 401, message: "Unauthorized" };
+    return failResponse("Unauthorized", 401);
 }

@@ -221,9 +221,13 @@ var Route = (function () {
             return register(methods, routeName, handlerSpec, options);
         },
 
+        view: function (routeName, handlerSpec, options) {
+            return register(["GET"], routeName, handlerSpec, Object.assign({}, options, { web: true }));
+        },
+
         resource: function (routeName, controller, options) {
             var ctrl = controller;
-            var opts = options || {};
+            var opts = Object.assign({}, options || {}, { _isResource: true });
 
             if (
                 ctrl &&
@@ -231,7 +235,7 @@ var Route = (function () {
                 typeof ctrl.index !== "function" &&
                 typeof ctrl.store !== "function"
             ) {
-                opts = ctrl;
+                opts = Object.assign({}, ctrl, { _isResource: true });
                 ctrl = null;
             }
 
@@ -317,7 +321,12 @@ var Route = (function () {
 
             entries = Array.isArray(entries) ? entries : [];
 
+            if (entries.length === 0) {
+                return { statusCode: 404, message: "404 Not Found: /" + normalizedRoute };
+            }
+
             var validEntries = [];
+            var brokenSpecs = [];
             for (var v = 0; v < entries.length; v++) {
                 var resolvedFn = resolveHandler(entries[v].handlerSpec);
                 if (resolvedFn) {
@@ -329,11 +338,21 @@ var Route = (function () {
                         routeParams: routeParams,
                         handler: resolvedFn
                     });
+                } else {
+                    brokenSpecs.push(
+                        typeof entries[v].handlerSpec === "string"
+                            ? entries[v].handlerSpec
+                            : JSON.stringify(entries[v].handlerSpec)
+                    );
                 }
             }
 
             if (validEntries.length === 0) {
-                return { statusCode: 404, message: "404 Not Found" };
+                var handlerErr = new Error(
+                    "Route handler could not be resolved for '/" + normalizedRoute + "': " + brokenSpecs.join(", ")
+                );
+                handlerErr.statusCode = 500;
+                throw handlerErr;
             }
 
             var allowedMethodsMap = {};
@@ -519,9 +538,14 @@ var Middlewares = {
 };
 
 function dispatchHttpRequest(e, defaultMethod) {
+    var routeName = "";
+    var rawMethod = String(defaultMethod || "GET").toUpperCase();
+    var action = "";
+    var context = null;
+
     try {
         if (!e) {
-            return handleResponse({ status: false, message: "Request event is required." });
+            return handleResponse({ status: false, code: 400, message: "Request event is required." }, e, null);
         }
 
         var rawParams = (e.parameter && typeof e.parameter === "object") ? e.parameter : {};
@@ -529,9 +553,21 @@ function dispatchHttpRequest(e, defaultMethod) {
         var rawPayload = {};
         if (defaultMethod === "POST") {
             if (e.postData && e.postData.contents) {
-                try {
-                    rawPayload = JSON.parse(e.postData.contents);
-                } catch (parseErr) {
+                var contentType = String(e.postData.type || "").toLowerCase();
+                var trimmedBody = String(e.postData.contents).trim();
+                var looksLikeJson = contentType.indexOf("application/json") !== -1 ||
+                    trimmedBody.charAt(0) === "{" ||
+                    trimmedBody.charAt(0) === "[";
+
+                if (looksLikeJson && trimmedBody !== "") {
+                    try {
+                        rawPayload = JSON.parse(trimmedBody);
+                    } catch (parseErr) {
+                        var jsonErr = new Error("Invalid JSON request body: " + parseErr.message);
+                        jsonErr.statusCode = 400;
+                        throw jsonErr;
+                    }
+                } else {
                     rawPayload = rawParams;
                 }
             } else {
@@ -539,10 +575,10 @@ function dispatchHttpRequest(e, defaultMethod) {
             }
         }
 
-        var rawMethod = (rawParams._method || rawPayload._method || defaultMethod).toString().toUpperCase();
+        rawMethod = (rawParams._method || rawPayload._method || defaultMethod).toString().toUpperCase();
 
         if (rawMethod === "OPTIONS") {
-            return handleResponse({ status: true, code: 204, message: "OK" });
+            return handleResponse({ status: true, code: 204, message: "OK" }, e, null);
         }
 
         var rawRoute = "";
@@ -552,26 +588,47 @@ function dispatchHttpRequest(e, defaultMethod) {
             rawRoute = String(e.pathInfo).trim();
         }
 
-        var routeName = rawRoute.replace(/^\/+|\/+$/g, "");
+        routeName = rawRoute.replace(/^\/+|\/+$/g, "");
 
         var params = sanitizeClientPayload(rawParams);
         var payload = defaultMethod === "POST"
             ? sanitizeClientPayload(rawPayload)
             : {};
 
-        var action = payload.action || params.action || "";
+        action = payload.action || params.action || "";
+
+        context = {
+            event: e,
+            route: routeName,
+            routeParams: {},
+            method: rawMethod,
+            action: action,
+            params: params,
+            payload: payload,
+            auth: null
+        };
 
         var resolution = Route.resolve(routeName, rawMethod, action);
         if (resolution.statusCode !== 200) {
-            return handleResponse({
-                status: false,
-                code: resolution.statusCode,
-                message: resolution.message
-            });
+            var resErr = new Error(resolution.message);
+            resErr.statusCode = resolution.statusCode;
+            var failPayload = (typeof formatErrorResponse === "function")
+                ? formatErrorResponse(resErr, resolution.statusCode, resolution.message, context)
+                : { status: false, code: resolution.statusCode, message: resolution.message };
+            return handleResponse(failPayload, e, context);
         }
 
         var matchedRoute = resolution.route;
+        var routeOpts = matchedRoute.options || {};
+        if (routeOpts.web === true || routeOpts.mode === "web") {
+            context.isWeb = true;
+        } else if (routeOpts._isResource === true || routeOpts.api === true || routeOpts.mode === "api") {
+            context.isApi = true;
+        }
+
         var routeParams = matchedRoute.routeParams || {};
+        context.routeParams = routeParams;
+
         var paramKeys = Object.keys(routeParams);
         for (var p = 0; p < paramKeys.length; p++) {
             var pKey = paramKeys[p];
@@ -579,17 +636,6 @@ function dispatchHttpRequest(e, defaultMethod) {
                 params[pKey] = routeParams[pKey];
             }
         }
-
-        var context = {
-            event: e,
-            route: routeName,
-            routeParams: routeParams,
-            method: rawMethod,
-            action: action,
-            params: params,
-            payload: payload,
-            auth: null
-        };
 
         for (var m = 0; m < matchedRoute.middlewares.length; m++) {
             var mwSpec = String(matchedRoute.middlewares[m]);
@@ -601,14 +647,31 @@ function dispatchHttpRequest(e, defaultMethod) {
             if (typeof mwFn === "function") {
                 var mwResult = mwFn(context, mwParam);
                 if (!mwResult.passed) {
-                    return handleResponse(mwResult.response);
+                    var mwResp = mwResult.response || { status: false, code: 401, message: "Unauthorized" };
+                    if (!mwResp.code) mwResp.code = 401;
+                    return handleResponse(mwResp, e, context);
                 }
             }
         }
 
         var result = matchedRoute.handler(context);
-        return handleResponse(result);
+        return handleResponse(result, e, context);
     } catch (error) {
-        return handleResponse({ status: false, message: error.message });
+        var statusCode = (error && error.statusCode) ? error.statusCode : 500;
+        var ctxInfo = context || {
+            route: routeName,
+            method: rawMethod,
+            action: action
+        };
+        var errorPayload = (typeof formatErrorResponse === "function")
+            ? formatErrorResponse(error, statusCode, null, ctxInfo)
+            : {
+                status: false,
+                code: statusCode,
+                message: (typeof isDebugEnabled === "function" && isDebugEnabled() && error && error.message)
+                    ? String(error.message)
+                    : "Internal server error."
+            };
+        return handleResponse(errorPayload, e, ctxInfo);
     }
 }

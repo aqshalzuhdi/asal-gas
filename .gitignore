@@ -4,3 +4,4 @@ creds.json
 local/storage/*.json
 !local/storage/.gitkeep
 .DS_Store
+.env
