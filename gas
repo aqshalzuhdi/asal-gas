@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
+const os = require("os");
+const vm = require("vm");
+const http = require("http");
+const https = require("https");
+const readline = require("readline");
+const { execSync, spawnSync, spawn } = require("child_process");
 const { bootGasRuntime } = require("./local/runtime/GasLoader");
 const { DB_FILE } = require("./local/runtime/GasMocks");
 
@@ -13,6 +18,7 @@ const arg1 = positionalArgs[0];
 const ROOT_DIR = __dirname;
 const SRC_DIR = path.join(ROOT_DIR, "src");
 const CLASP_FILE = path.join(ROOT_DIR, ".clasp.json");
+const CREDS_FILE = path.join(ROOT_DIR, "creds.json");
 
 const DEFAULT_FILE_PUSH_ORDER = [
     "src/config/config.js",
@@ -170,7 +176,8 @@ function resolveWebAppDeployment(cfg) {
     }
 
     try {
-        const output = execSync("npx clasp deployments", { cwd: ROOT_DIR, encoding: "utf8" });
+        console.log("🔍 Checking Web App deployments...");
+        const output = execSync("npx --quiet clasp deployments", { cwd: ROOT_DIR, encoding: "utf8" });
         const matches = [...output.matchAll(/-\s+(AKfycb[a-zA-Z0-9_-]+)\s+@(\d+)/g)];
         if (matches.length > 0) {
             matches.sort((a, b) => Number(b[2]) - Number(a[2]));
@@ -186,22 +193,783 @@ function resolveWebAppDeployment(cfg) {
     return null;
 }
 
-function tryClaspRun(fnName, payloadObj) {
-    try {
-        const argsPart = payloadObj
-            ? ` -p "${JSON.stringify([payloadObj]).replace(/"/g, '\\"')}"`
-            : "";
-        const rawOut = execSync(`npx clasp run ${fnName}${argsPart}`, {
-            cwd: ROOT_DIR,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"]
-        });
+function syncApiExecutableDeployment(cfg) {
+    let apiDeploymentId = cfg.apiDeploymentId || "";
 
-        const jsonLine = rawOut.split(/\r?\n/).find((l) => l.trim().startsWith("{"));
-        return jsonLine ? JSON.parse(jsonLine) : null;
+    if (!apiDeploymentId) {
+        try {
+            console.log("🔍 Checking API Executable deployment...");
+            const output = execSync("npx --quiet clasp deployments", { cwd: ROOT_DIR, encoding: "utf8" });
+            const candidates = [];
+
+            for (const line of output.split(/\r?\n/)) {
+                if (line.toLowerCase().includes("web app meta-version")) continue;
+                const match = line.match(/-\s+(AKfycb[a-zA-Z0-9_-]+)\s+@(\d+)/);
+                if (!match) continue;
+
+                const depId = match[1];
+                const version = Number(match[2]);
+                if (cfg.deploymentId && depId === cfg.deploymentId) continue;
+
+                candidates.push({
+                    depId,
+                    version,
+                    isApiLabel: line.toLowerCase().includes("api executable")
+                });
+            }
+
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => {
+                    if (a.isApiLabel !== b.isApiLabel) return a.isApiLabel ? -1 : 1;
+                    return b.version - a.version;
+                });
+                apiDeploymentId = candidates[0].depId;
+                cfg.apiDeploymentId = apiDeploymentId;
+                writeClaspConfig(cfg);
+            }
+        } catch (_) { }
+    }
+
+    if (!apiDeploymentId) {
+        console.log("⚠️  No API Executable deployment found. Create one in GAS Editor -> Deploy -> New deployment -> API Executable.");
+        return;
+    }
+
+    const res = spawnSync(`npx --quiet clasp deploy -i ${apiDeploymentId} -d "API Executable"`, {
+        cwd: ROOT_DIR,
+        encoding: "utf8",
+        shell: true,
+        stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    const out = String(res.stdout || "").trim();
+    const err = String(res.stderr || "").trim();
+
+    if (res.status === 0) {
+        const verMatch = out.match(/@(\d+)/);
+        const verLabel = verMatch ? ` @${verMatch[1]}` : "";
+        console.log(`🔄 Updated API Executable deployment (${apiDeploymentId}${verLabel}).`);
+    } else {
+        delete cfg.apiDeploymentId;
+        writeClaspConfig(cfg);
+        console.error(`⚠️  Failed to update API Executable deployment (${apiDeploymentId}): ${err || out}`);
+    }
+}
+
+function askQuestion(promptText) {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+    return new Promise((resolve) => {
+        rl.question(promptText, (answer) => {
+            rl.close();
+            resolve(String(answer || "").trim());
+        });
+    });
+}
+
+function readCredsFile() {
+    if (!fs.existsSync(CREDS_FILE)) return null;
+    try {
+        return JSON.parse(fs.readFileSync(CREDS_FILE, "utf8"));
     } catch (_) {
         return null;
     }
+}
+
+function writeCredsFile(projectId, clientId, clientSecret) {
+    const payload = {
+        installed: {
+            client_id: clientId || "YOUR_CLIENT_ID.apps.googleusercontent.com",
+            project_id: projectId || "your-gcp-project-id",
+            auth_uri: "https://accounts.google.com/o/oauth2/auth",
+            token_uri: "https://oauth2.googleapis.com/token",
+            auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+            client_secret: clientSecret || "YOUR_CLIENT_SECRET",
+            redirect_uris: ["http://localhost"]
+        }
+    };
+    fs.writeFileSync(CREDS_FILE, JSON.stringify(payload, null, 2) + "\n", "utf8");
+}
+
+function getClaspRcTargets() {
+    return [
+        path.join(ROOT_DIR, ".clasprc.json"),
+        path.join(os.homedir(), ".clasprc.json")
+    ];
+}
+
+function findClaspRcFile() {
+    for (const filePath of getClaspRcTargets()) {
+        if (fs.existsSync(filePath)) return filePath;
+    }
+    return null;
+}
+
+function clearClaspSessions() {
+    for (const filePath of getClaspRcTargets()) {
+        try {
+            if (fs.existsSync(filePath)) {
+                fs.rmSync(filePath, { force: true });
+            }
+        } catch (_) { }
+    }
+}
+
+function hasRequiredScopes(scopeStr) {
+    const s = String(scopeStr || "");
+    return (
+        s.includes("https://www.googleapis.com/auth/spreadsheets") &&
+        s.includes("https://www.googleapis.com/auth/drive")
+    );
+}
+
+function isClaspCredsLoggedIn(clientId) {
+    if (!clientId) return false;
+
+    for (const filePath of getClaspRcTargets()) {
+        try {
+            if (!fs.existsSync(filePath)) continue;
+            const raw = fs.readFileSync(filePath, "utf8");
+            if (!raw.includes(clientId)) continue;
+
+            const rc = JSON.parse(raw);
+            if (rc.tokens && typeof rc.tokens === "object") {
+                for (const key of Object.keys(rc.tokens)) {
+                    const entry = rc.tokens[key] || {};
+                    const scope = entry.scope || entry.token?.scope || "";
+                    const token = entry.access_token || entry.token?.access_token;
+                    if (token && hasRequiredScopes(scope)) {
+                        return true;
+                    }
+                }
+            }
+
+            const rootScope = rc.scope || rc.token?.scope || "";
+            const rootToken = rc.access_token || rc.token?.access_token;
+            if (rootToken && hasRequiredScopes(rootScope)) {
+                return true;
+            }
+        } catch (_) { }
+    }
+
+    return false;
+}
+
+async function authorizeScopesFallback(creds, rcPath) {
+    const installed = creds.installed || {};
+    const manifestPath = path.join(SRC_DIR, "appsscript.json");
+    let manifestScopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/script.external_request"
+    ];
+
+    try {
+        if (fs.existsSync(manifestPath)) {
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+            if (Array.isArray(manifest.oauthScopes) && manifest.oauthScopes.length > 0) {
+                manifestScopes = manifest.oauthScopes;
+            }
+        }
+    } catch (_) { }
+
+    const allScopes = Array.from(new Set([
+        ...manifestScopes,
+        "https://www.googleapis.com/auth/script.projects",
+        "https://www.googleapis.com/auth/script.deployments",
+        "https://www.googleapis.com/auth/userinfo.email"
+    ]));
+
+    return new Promise((resolve) => {
+        const server = http.createServer((req, res) => {
+            const port = server.address().port;
+            const redirectUri = `http://localhost:${port}`;
+            const reqUrl = new URL(req.url, redirectUri);
+            const code = reqUrl.searchParams.get("code");
+            const error = reqUrl.searchParams.get("error");
+
+            res.setHeader("Connection", "close");
+            if (error || !code) {
+                res.writeHead(400, { "Content-Type": "text/plain" });
+                res.end("Authorization failed. You can close this tab.");
+                server.close();
+                resolve(false);
+                return;
+            }
+
+            res.writeHead(200, { "Content-Type": "text/plain" });
+            res.end("Authorization successful! You can close this tab and return to the terminal.");
+            server.close();
+
+            const postData = new URLSearchParams({
+                code,
+                client_id: installed.client_id,
+                client_secret: installed.client_secret,
+                redirect_uri: redirectUri,
+                grant_type: "authorization_code"
+            }).toString();
+
+            const tokenReq = https.request("https://oauth2.googleapis.com/token", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Content-Length": Buffer.byteLength(postData)
+                }
+            }, (tokenRes) => {
+                let body = "";
+                tokenRes.on("data", (chunk) => { body += chunk; });
+                tokenRes.on("end", () => {
+                    try {
+                        const tokenJson = JSON.parse(body);
+                        if (!tokenJson.access_token) {
+                            resolve(false);
+                            return;
+                        }
+
+                        const newToken = {
+                            access_token: tokenJson.access_token,
+                            refresh_token: tokenJson.refresh_token,
+                            scope: tokenJson.scope || allScopes.join(" "),
+                            token_type: tokenJson.token_type || "Bearer",
+                            expiry_date: Date.now() + ((tokenJson.expires_in || 3599) * 1000)
+                        };
+
+                        const rcData = fs.existsSync(rcPath)
+                            ? JSON.parse(fs.readFileSync(rcPath, "utf8"))
+                            : {};
+
+                        if (rcData.tokens && typeof rcData.tokens === "object") {
+                            const keys = Object.keys(rcData.tokens);
+                            const targetKeys = keys.length > 0 ? keys : ["default"];
+                            for (const key of targetKeys) {
+                                const prev = rcData.tokens[key] || {};
+                                rcData.tokens[key] = {
+                                    ...prev,
+                                    type: prev.type || "authorized_user",
+                                    client_id: installed.client_id,
+                                    client_secret: installed.client_secret,
+                                    clientId: installed.client_id,
+                                    clientSecret: installed.client_secret,
+                                    access_token: newToken.access_token,
+                                    refresh_token: newToken.refresh_token || prev.refresh_token,
+                                    scope: newToken.scope,
+                                    token_type: newToken.token_type,
+                                    expiry_date: newToken.expiry_date
+                                };
+                                if (prev.token) {
+                                    rcData.tokens[key].token = newToken;
+                                }
+                            }
+                        } else {
+                            rcData.token = newToken;
+                            rcData.access_token = newToken.access_token;
+                            rcData.refresh_token = newToken.refresh_token;
+                            rcData.scope = newToken.scope;
+                            rcData.oauth2ClientSettings = {
+                                clientId: installed.client_id,
+                                clientSecret: installed.client_secret,
+                                redirectUri: "http://localhost"
+                            };
+                            rcData.isLocalCreds = true;
+                        }
+
+                        fs.writeFileSync(rcPath, JSON.stringify(rcData, null, 2) + "\n", "utf8");
+                        resolve(true);
+                    } catch (_) {
+                        resolve(false);
+                    }
+                });
+            });
+
+            tokenReq.on("error", () => resolve(false));
+            tokenReq.write(postData);
+            tokenReq.end();
+        });
+
+        server.listen(0, "127.0.0.1", () => {
+            const port = server.address().port;
+            const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+            authUrl.searchParams.set("client_id", installed.client_id);
+            authUrl.searchParams.set("redirect_uri", `http://localhost:${port}`);
+            authUrl.searchParams.set("response_type", "code");
+            authUrl.searchParams.set("scope", allScopes.join(" "));
+            authUrl.searchParams.set("access_type", "offline");
+            authUrl.searchParams.set("prompt", "consent");
+
+            console.log(`🌐 Opening browser to grant Sheets & Drive scopes:\n${authUrl.toString()}`);
+            const openCmd = process.platform === "win32"
+                ? `start "" "${authUrl.toString()}"`
+                : process.platform === "darwin"
+                    ? `open "${authUrl.toString()}"`
+                    : `xdg-open "${authUrl.toString()}"`;
+            try {
+                execSync(openCmd, { stdio: "ignore" });
+            } catch (_) { }
+        });
+    });
+}
+
+function ensureManifestScopes() {
+    const manifestPath = path.join(SRC_DIR, "appsscript.json");
+    if (!fs.existsSync(manifestPath)) return false;
+
+    try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+        const requiredScopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/script.external_request"
+        ];
+
+        const currentScopes = Array.isArray(manifest.oauthScopes) ? manifest.oauthScopes : [];
+        const mergedScopes = Array.from(new Set([...currentScopes, ...requiredScopes]));
+        const hasExecutionApi = manifest.executionApi && manifest.executionApi.access === "MYSELF";
+
+        if (mergedScopes.length !== currentScopes.length || !hasExecutionApi) {
+            manifest.executionApi = { access: "MYSELF" };
+            manifest.oauthScopes = mergedScopes;
+            fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+            return true;
+        }
+    } catch (_) { }
+
+    return false;
+}
+
+function printCredsManualGuide(projectId) {
+    const pid = projectId || "<PROJECT_ID>";
+    console.log("\n========================================================");
+    console.log("🔑 GOOGLE CLOUD & OAUTH CREDENTIALS SETUP GUIDE");
+    console.log("========================================================");
+    console.log("1. Link GAS Project to Standard GCP Project (one-time):");
+    console.log("   Run 'gas open' -> Project Settings -> GCP Project -> Change project");
+    console.log("2. Enable Required APIs:");
+    console.log(`   https://console.cloud.google.com/apis/library?project=${pid}`);
+    console.log("   Enable: Apps Script API, Google Sheets API, Google Drive API, Google Docs API");
+    console.log("3. Configure OAuth Consent Screen & Test User:");
+    console.log(`   https://console.cloud.google.com/apis/credentials/consent?project=${pid}`);
+    console.log("   Select 'External' -> fill required fields -> add your Google email under 'Test users'");
+    console.log("4. Create OAuth Client ID & Secret:");
+    console.log(`   https://console.cloud.google.com/apis/credentials?project=${pid}`);
+    console.log("   Click '+ CREATE CREDENTIALS' -> 'OAuth client ID' -> Application type: 'Desktop app'");
+    console.log("   Copy 'Client ID' (*.apps.googleusercontent.com) & 'Client Secret' from the popup");
+    console.log("   (Or click 'DOWNLOAD JSON' and save it directly as ./creds.json in project root)");
+    console.log("5. Publish API Executable Deployment in GAS Editor (one-time):");
+    console.log("   Run 'gas open' -> Deploy -> New deployment -> Type: 'API Executable' (Only myself)");
+    console.log("========================================================\n");
+}
+
+async function ensureProjectId(cfg) {
+    const existingCreds = readCredsFile();
+    const credsProjectId = existingCreds?.installed?.project_id;
+
+    if (!cfg.projectId && credsProjectId && credsProjectId !== "your-gcp-project-id") {
+        cfg.projectId = credsProjectId;
+        writeClaspConfig(cfg);
+        return cfg.projectId;
+    }
+
+    if (!cfg.projectId || cfg.projectId === "your-gcp-project-id") {
+        console.log("⚠️  GCP 'projectId' is not configured in .clasp.json.");
+        const inputId = await askQuestion("Enter your Google Cloud Project ID (e.g. my-gas-project-12345): ");
+        if (!inputId) {
+            console.error("❌ GCP Project ID is required for remote execution.");
+            process.exit(1);
+        }
+        cfg.projectId = inputId;
+        writeClaspConfig(cfg);
+        console.log(`✅ Saved projectId '${inputId}' to .clasp.json.`);
+    }
+
+    return cfg.projectId;
+}
+
+function runClaspLoginWithCreds() {
+    return new Promise((resolve) => {
+        const child = spawn("npx clasp login --creds creds.json", {
+            cwd: ROOT_DIR,
+            shell: true,
+            stdio: ["inherit", "pipe", "pipe"]
+        });
+
+        let output = "";
+        let completed = false;
+
+        const finishLogin = () => {
+            if (completed) return;
+            completed = true;
+            clearInterval(pollTimer);
+            setTimeout(() => {
+                try {
+                    if (process.platform === "win32" && child.pid) {
+                        spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+                    } else {
+                        child.kill("SIGKILL");
+                    }
+                } catch (_) { }
+                resolve(true);
+            }, 600);
+        };
+
+        child.stdout.on("data", (chunk) => {
+            output += chunk.toString();
+            process.stdout.write(chunk);
+            if (output.includes("You are logged in as")) {
+                finishLogin();
+            }
+        });
+
+        child.stderr.on("data", (chunk) => {
+            output += chunk.toString();
+            process.stderr.write(chunk);
+            if (output.includes("You are logged in as")) {
+                finishLogin();
+            }
+        });
+
+        const pollTimer = setInterval(() => {
+            const localRc = path.join(ROOT_DIR, ".clasprc.json");
+            if (fs.existsSync(localRc)) {
+                try {
+                    const raw = fs.readFileSync(localRc, "utf8");
+                    if (raw.includes("access_token") && raw.includes("refresh_token")) {
+                        finishLogin();
+                    }
+                } catch (_) { }
+            }
+        }, 500);
+
+        child.on("close", (code) => {
+            clearInterval(pollTimer);
+            if (completed) return;
+            if (code === 0) {
+                resolve(true);
+            } else {
+                process.exit(code || 1);
+            }
+        });
+    });
+}
+
+async function setupRemoteCredentials(cfg, forceReauth = false) {
+    const projectId = await ensureProjectId(cfg);
+    let creds = readCredsFile();
+
+    if (!creds) {
+        console.log("⚠️  creds.json not found in project root.");
+        printCredsManualGuide(projectId);
+
+        console.log("Paste your OAuth Desktop credentials below (from Step 4),");
+        console.log("or press Enter to generate an empty ./creds.json template first.\n");
+
+        const clientId = await askQuestion("Enter OAuth Client ID (*.apps.googleusercontent.com): ");
+        if (clientId) {
+            const clientSecret = await askQuestion("Enter OAuth Client Secret: ");
+            writeCredsFile(projectId, clientId, clientSecret);
+            console.log("✅ Generated ./creds.json.");
+            creds = readCredsFile();
+        } else {
+            writeCredsFile(projectId, "", "");
+            console.log("📄 Generated template at ./creds.json.");
+            console.log("👉 Fill in 'client_id' and 'client_secret' (or overwrite with downloaded JSON), then run 'gas creds'.");
+            return false;
+        }
+    }
+
+    const installed = creds?.installed || {};
+    const clientId = String(installed.client_id || "").trim();
+    const clientSecret = String(installed.client_secret || "").trim();
+
+    if (!clientId || !clientSecret || clientId.startsWith("YOUR_") || clientSecret.startsWith("YOUR_")) {
+        console.error("❌ ./creds.json contains empty or placeholder credentials.");
+        printCredsManualGuide(projectId);
+        console.log("👉 Update 'client_id' and 'client_secret' in ./creds.json, then run 'gas creds'.");
+        return false;
+    }
+
+    if (installed.project_id !== projectId) {
+        writeCredsFile(projectId, clientId, clientSecret);
+    }
+
+    const manifestUpdated = ensureManifestScopes();
+
+    if (forceReauth || !isClaspCredsLoggedIn(clientId)) {
+        console.log("🔐 Authenticating clasp with ./creds.json...");
+        clearClaspSessions();
+
+        const srcManifest = path.join(SRC_DIR, "appsscript.json");
+        const rootManifest = path.join(ROOT_DIR, "appsscript.json");
+        const copiedTempManifest = !fs.existsSync(rootManifest) && fs.existsSync(srcManifest);
+
+        try {
+            if (copiedTempManifest) {
+                fs.copyFileSync(srcManifest, rootManifest);
+            }
+            await runClaspLoginWithCreds();
+        } finally {
+            if (copiedTempManifest && fs.existsSync(rootManifest)) {
+                try { fs.rmSync(rootManifest, { force: true }); } catch (_) { }
+            }
+        }
+
+        if (!isClaspCredsLoggedIn(clientId)) {
+            const rcPath = findClaspRcFile() || path.join(os.homedir(), ".clasprc.json");
+            await authorizeScopesFallback(creds, rcPath);
+        }
+
+        if (!isClaspCredsLoggedIn(clientId)) {
+            console.error("❌ Failed to store local OAuth credentials with required scopes in .clasprc.json.");
+            return false;
+        }
+
+        console.log("📦 Syncing manifest scopes to Google Apps Script...");
+        runClaspCommand("push -f");
+        syncApiExecutableDeployment(cfg);
+        console.log("✅ clasp authenticated with ./creds.json.");
+    } else if (manifestUpdated) {
+        runClaspCommand("push -f");
+        syncApiExecutableDeployment(cfg);
+    }
+
+    return true;
+}
+
+function parseClaspRunOutput(rawOut) {
+    const text = String(rawOut || "").trim();
+    if (!text) return null;
+
+    const firstBrace = text.indexOf("{");
+    const lastBrace = text.lastIndexOf("}");
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+        return null;
+    }
+
+    const candidate = text.slice(firstBrace, lastBrace + 1);
+    try {
+        return JSON.parse(candidate);
+    } catch (_) {
+        try {
+            const evaluated = vm.runInNewContext(`(${candidate})`, Object.create(null), { timeout: 100 });
+            if (evaluated && typeof evaluated === "object") {
+                return JSON.parse(JSON.stringify(evaluated));
+            }
+        } catch (__) { }
+        return null;
+    }
+}
+
+function extractGasException(combinedText) {
+    const idx = combinedText.indexOf("Exception:");
+    if (idx === -1) return null;
+
+    return combinedText
+        .slice(idx)
+        .replace(/^Exception:\s*Exception:\s*/i, "Exception: ")
+        .trim();
+}
+
+function tryClaspRun(fnName, payloadObj, verbose = false) {
+    const hasPayload = payloadObj !== null && payloadObj !== undefined;
+    const argsPart = hasPayload
+        ? ` -p "${JSON.stringify([payloadObj]).replace(/"/g, '\\"')}"`
+        : "";
+
+    const proc = spawnSync(`npx --quiet clasp run ${fnName}${argsPart}`, {
+        cwd: ROOT_DIR,
+        encoding: "utf8",
+        shell: true,
+        stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    const stdout = String(proc.stdout || "").trim();
+    const stderr = String(proc.stderr || "")
+        .split(/\r?\n/)
+        .filter((line) => !line.trim().startsWith("npm notice"))
+        .join("\n")
+        .trim();
+    const combined = [stderr, stdout].filter(Boolean).join("\n");
+
+    const gasException = extractGasException(combined);
+    if (gasException) {
+        if (verbose) {
+            console.error(`❌ GAS ${gasException}`);
+            if (gasException.includes("Required permissions:")) {
+                console.error("👉 Run 'gas push -f' and 'gas creds --force' (check all permission boxes in browser) to grant the required scopes.");
+            }
+        }
+        return { __gasException: gasException };
+    }
+
+    const parsed = parseClaspRunOutput(stdout);
+    if (parsed) {
+        return parsed;
+    }
+
+    if (proc.status === 0 && stdout) {
+        return stdout;
+    }
+
+    if (verbose) {
+        if (proc.status !== 0) {
+            console.error(`❌ clasp run ${fnName} failed (exit code ${proc.status}):\n${combined || "(no output)"}`);
+        } else {
+            console.log(`ℹ️  Raw clasp output:\n${combined || "(empty response)"}`);
+        }
+    }
+
+    return null;
+}
+
+function printRemoteRollback(res) {
+    if (typeof res === "string") {
+        console.log(`✅ Remote Rollback: ${res}`);
+        return;
+    }
+
+    if (res && res.status === false) {
+        console.error(`❌ Remote rollback failed: ${res.message || JSON.stringify(res)}`);
+        process.exit(1);
+    }
+
+    const list = Array.isArray(res?.rolled_back)
+        ? res.rolled_back
+        : Array.isArray(res?.rolledBack)
+            ? res.rolledBack
+            : null;
+
+    if (list && list.length === 0) {
+        console.log("✅ Nothing to rollback. No remote migration batches found.");
+    } else if (list && list.length > 0) {
+        console.log(`✅ Remote Rollback (${list.length}): ${list.join(", ")}`);
+    } else if (res?.message) {
+        console.log(`✅ Remote Rollback: ${res.message}`);
+    } else {
+        console.log(`✅ Remote Rollback: ${JSON.stringify(res)}`);
+    }
+}
+
+function printRemoteMigration(mig) {
+    if (!mig) {
+        console.log("⚠️  No migration status returned from Google Apps Script.");
+        return;
+    }
+
+    if (typeof mig === "string") {
+        console.log(`✅ Remote Migrate: ${mig}`);
+        return;
+    }
+
+    const list = Array.isArray(mig.migrated)
+        ? mig.migrated
+        : Array.isArray(mig.ran)
+            ? mig.ran
+            : null;
+
+    if (list && list.length === 0) {
+        console.log("✅ Nothing to migrate. All remote migrations are up to date.");
+    } else if (list && list.length > 0) {
+        console.log(`✅ Remote Migrate (${list.length}): ${list.join(", ")}`);
+    } else if (mig.message) {
+        console.log(`✅ Remote Migrate: ${mig.message}`);
+    } else {
+        console.log(`✅ Remote Migrate: ${JSON.stringify(mig)}`);
+    }
+}
+
+function formatSeederEntry(item, hideCount = false) {
+    if (typeof item === "string") return item;
+    if (!item || typeof item !== "object") return null;
+
+    const hasCount = !hideCount && item.count !== undefined && item.count !== null;
+    const hasTable = item.table !== undefined && item.table !== null && item.table !== "";
+
+    if (hasTable && hasCount) {
+        return `${item.table} (${item.count} records)`;
+    }
+
+    if (hasTable) {
+        return `${item.table}`;
+    }
+
+    if (hasCount) {
+        return `${item.count} records`;
+    }
+
+    if (item.seeder) {
+        const inner = Array.isArray(item.result)
+            ? item.result.flat(Infinity).filter((v) => v !== null && v !== undefined)
+            : item.result !== null && item.result !== undefined
+                ? [item.result]
+                : [];
+
+        if (inner.length === 0) {
+            return `${item.seeder} (seeded)`;
+        }
+
+        const innerText = inner.map((v) => formatSeederEntry(v, hideCount)).filter(Boolean).join(", ");
+        if (!innerText) {
+            return `${item.seeder} (seeded)`;
+        }
+
+        return innerText.startsWith("(")
+            ? `${item.seeder} ${innerText}`
+            : `${item.seeder} -> ${innerText}`;
+    }
+
+    return null;
+}
+
+function printSeederSummary(seeder, label = "Remote Seeder") {
+    const hideCount = flags.includes("--no-count");
+
+    if (!seeder) {
+        console.error(`❌ ${label}: No seeder status returned.`);
+        return false;
+    }
+
+    if (typeof seeder === "string") {
+        console.log(`✅ ${label}: ${seeder}`);
+        return true;
+    }
+
+    if (seeder.status === false) {
+        console.error(`❌ ${label}: ${seeder.message || JSON.stringify(seeder)}`);
+        return false;
+    }
+
+    if (Array.isArray(seeder.results)) {
+        const items = seeder.results
+            .flat(Infinity)
+            .filter((item) => item !== null && item !== undefined);
+
+        if (items.length === 0) {
+            console.log(`✅ ${label}: ${seeder.message || "Database seeded successfully."}`);
+            return true;
+        }
+
+        const formatted = items.map((item) => formatSeederEntry(item, hideCount)).filter(Boolean);
+        const summary = formatted.length > 0
+            ? formatted.join(", ")
+            : (seeder.message || "Database seeded successfully.");
+
+        console.log(`✅ ${label}: ${summary}`);
+        return true;
+    }
+
+    const single = formatSeederEntry(seeder, hideCount);
+    if (single) {
+        console.log(`✅ ${label}: ${single}`);
+        return true;
+    }
+
+    if (seeder.message) {
+        console.log(`✅ ${label}: ${seeder.message}`);
+    } else {
+        console.log(`✅ ${label}: ${JSON.stringify(seeder)}`);
+    }
+    return true;
 }
 
 function printSetupSummary(info, fallbackUrl) {
@@ -241,6 +1009,7 @@ function pushAndSyncGas() {
     const showSetup = flags.includes("--setup");
 
     runClaspCommand(`push${forceFlag}`);
+    syncApiExecutableDeployment(cfg);
 
     const remoteRes = tryClaspRun("setupWorkspace", {
         migrate: true,
@@ -248,10 +1017,10 @@ function pushAndSyncGas() {
         webAppUrl: cfg.webAppUrl || ""
     });
 
-    if (remoteRes && remoteRes.status) {
-        console.log(`✅ Remote Migrate: ${JSON.stringify(remoteRes.migration)}`);
-        if (remoteRes.seeder) {
-            console.log(`🌱 Remote Seeder : ${JSON.stringify(remoteRes.seeder)}`);
+    if (remoteRes && !remoteRes.__gasException && remoteRes.status) {
+        printRemoteMigration(remoteRes.migration);
+        if (shouldSeed) {
+            printSeederSummary(remoteRes.seeder, "Remote Seeder");
         }
         if (remoteRes.first_setup || !remoteRes.SHEET_ID || showSetup) {
             printSetupSummary(remoteRes, cfg.webAppUrl);
@@ -268,10 +1037,17 @@ function pushAndSyncGas() {
     }
 }
 
-function deployGasWebApp(description) {
+async function deployGasWebApp(description) {
     const cfg = readClaspConfig();
     const desc = (description || "Deploy via GAS CLI").replace(/"/g, "");
     const showSetup = flags.includes("--setup");
+    const shouldMigrate = flags.includes("--migrate");
+    const shouldSeed = flags.includes("--seed");
+
+    if (shouldMigrate || shouldSeed) {
+        const ready = await setupRemoteCredentials(cfg, false);
+        if (!ready) process.exit(1);
+    }
 
     console.log("📦 Pushing latest code to Google Apps Script...");
     runClaspCommand("push -f");
@@ -307,8 +1083,25 @@ function deployGasWebApp(description) {
     writeClaspConfig(cfg);
     console.log(`🌐 Web App URL: ${webAppUrl}`);
 
-    const bootRes = tryClaspRun("setupWorkspace", { webAppUrl });
+    syncApiExecutableDeployment(cfg);
+
+    const bootRes = tryClaspRun(
+        "setupWorkspace",
+        { webAppUrl, migrate: shouldMigrate, seed: shouldSeed },
+        shouldMigrate || shouldSeed
+    );
+
+    if (bootRes && bootRes.__gasException) {
+        process.exit(1);
+    }
+
     if (bootRes && bootRes.status) {
+        if (shouldMigrate) {
+            printRemoteMigration(bootRes.migration);
+        }
+        if (shouldSeed) {
+            printSeederSummary(bootRes.seeder, "Remote Seeder");
+        }
         if (bootRes.first_setup || !bootRes.SHEET_ID || showSetup) {
             printSetupSummary(bootRes, webAppUrl);
         }
@@ -493,7 +1286,7 @@ function createSeeder(rawName) {
     }
 });
 `;
-    writeSrcFile(`database/seeders/Seeder_${entity}.js`, content);
+    writeSrcFile(`database/seeders/${entity}Seeder.js`, content);
 }
 
 function listRoutes() {
@@ -573,145 +1366,262 @@ function listRoutes() {
     console.log(`\nTotal routes: ${routes.length}\n`);
 }
 
-switch (command) {
-    case "init":
-    case "clasp:create":
-        initGasProject(arg1);
-        break;
+(async function main() {
+    switch (command) {
+        case "init":
+        case "clasp:create":
+            initGasProject(arg1);
+            break;
 
-    case "login":
-        runClaspCommand("login");
-        break;
+        case "login":
+            runClaspCommand("login");
+            break;
 
-    case "push":
-    case "clasp:push":
-        pushAndSyncGas();
-        break;
-
-    case "pull":
-    case "clasp:pull":
-        ensureClaspConfigured();
-        runClaspCommand("pull");
-        break;
-
-    case "status":
-        ensureClaspConfigured();
-        runClaspCommand("show-file-status");
-        break;
-
-    case "open":
-        openGasEditor();
-        break;
-
-    case "deploy":
-        deployGasWebApp(arg1);
-        break;
-
-    case "make:module": {
-        if (!arg1) {
-            console.error("Usage: gas make:module Project [-r|--plain]");
-            process.exit(1);
+        case "creds": {
+            const cfg = readClaspConfig();
+            const forceReauth = flags.includes("-f") || flags.includes("--force");
+            const ready = await setupRemoteCredentials(cfg, forceReauth);
+            if (!ready) process.exit(1);
+            break;
         }
-        const entity = toPascalCase(arg1).replace(/(Controller|Seeder)$/, "");
-        const tablePascal = toPascalCase(pluralizeSnake(toSnakeCase(entity)));
-        createMigration(`Create${tablePascal}Table`);
-        createSeeder(entity);
-        createController(`${entity}Controller`, flags);
-        break;
-    }
 
-    case "make:migration":
-        if (!arg1) {
-            console.error("Usage: gas make:migration CreateProjectsTable");
-            process.exit(1);
+        case "push":
+        case "clasp:push":
+            pushAndSyncGas();
+            break;
+
+        case "pull":
+        case "clasp:pull":
+            ensureClaspConfigured();
+            runClaspCommand("pull");
+            break;
+
+        case "status":
+            ensureClaspConfigured();
+            runClaspCommand("show-file-status");
+            break;
+
+        case "open":
+            openGasEditor();
+            break;
+
+        case "deploy":
+            await deployGasWebApp(arg1);
+            break;
+
+        case "make:module": {
+            if (!arg1) {
+                console.error("Usage: gas make:module Project [-r|--plain]");
+                process.exit(1);
+            }
+            const entity = toPascalCase(arg1).replace(/(Controller|Seeder)$/, "");
+            const tablePascal = toPascalCase(pluralizeSnake(toSnakeCase(entity)));
+            createMigration(`Create${tablePascal}Table`);
+            createSeeder(entity);
+            createController(`${entity}Controller`, flags);
+            break;
         }
-        createMigration(arg1);
-        break;
 
-    case "make:controller":
-        if (!arg1) {
-            console.error("Usage: gas make:controller CompanyController [-r|--plain]");
-            process.exit(1);
+        case "make:migration":
+            if (!arg1) {
+                console.error("Usage: gas make:migration CreateProjectsTable");
+                process.exit(1);
+            }
+            createMigration(arg1);
+            break;
+
+        case "make:controller":
+            if (!arg1) {
+                console.error("Usage: gas make:controller CompanyController [-r|--plain]");
+                process.exit(1);
+            }
+            createController(arg1, flags);
+            break;
+
+        case "make:seeder":
+            if (!arg1) {
+                console.error("Usage: gas make:seeder ProjectSeeder");
+                process.exit(1);
+            }
+            createSeeder(arg1);
+            break;
+
+        case "db:reindex": {
+            bootGasRuntime();
+            console.log(global.rebuildAllIndexes());
+            break;
         }
-        createController(arg1, flags);
-        break;
 
-    case "make:seeder":
-        if (!arg1) {
-            console.error("Usage: gas make:seeder ProjectSeeder");
-            process.exit(1);
+        case "migrate": {
+            bootGasRuntime();
+            console.log(global.migrate());
+            if (flags.includes("--seed")) {
+                const ok = printSeederSummary(global.dbSeed(), "Local Seeder");
+                if (!ok) process.exit(1);
+            }
+            break;
         }
-        createSeeder(arg1);
-        break;
 
-    case "db:reindex": {
-        bootGasRuntime();
-        console.log(global.rebuildAllIndexes());
-        break;
-    }
+        case "migrate:fresh": {
+            fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+            fs.writeFileSync(DB_FILE, JSON.stringify({ sheets: {} }, null, 2));
+            bootGasRuntime();
+            console.log(global.migrateFresh());
+            if (flags.includes("--seed")) {
+                const ok = printSeederSummary(global.dbSeed(), "Local Seeder");
+                if (!ok) process.exit(1);
+            }
+            break;
+        }
 
-    case "migrate": {
-        bootGasRuntime();
-        console.log(global.migrate());
-        if (flags.includes("--seed")) console.log(global.dbSeed());
-        break;
-    }
+        case "migrate:rollback": {
+            bootGasRuntime();
+            console.log(global.migrateRollback());
+            break;
+        }
 
-    case "migrate:fresh": {
-        fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
-        fs.writeFileSync(DB_FILE, JSON.stringify({ sheets: {} }, null, 2));
-        bootGasRuntime();
-        console.log(global.migrateFresh());
-        if (flags.includes("--seed")) console.log(global.dbSeed());
-        break;
-    }
+        case "migrate:status": {
+            bootGasRuntime();
+            global.migrateStatus();
+            break;
+        }
 
-    case "migrate:rollback": {
-        bootGasRuntime();
-        console.log(global.migrateRollback());
-        break;
-    }
+        case "migrate:remote":
+        case "migrate:remote:rollback":
+        case "migrate:remote:refresh": {
+            const cfg = readClaspConfig();
+            const ready = await setupRemoteCredentials(cfg, false);
+            if (!ready) process.exit(1);
 
-    case "migrate:status": {
-        bootGasRuntime();
-        global.migrateStatus();
-        break;
-    }
+            const isRefresh = command === "migrate:remote:refresh";
+            const isRollback = !isRefresh && (command === "migrate:remote:rollback" || flags.includes("--rollback"));
+            const shouldSeed = flags.includes("--seed");
 
-    case "db:seed": {
-        bootGasRuntime();
-        console.log(global.dbSeed());
-        break;
-    }
+            if (isRollback || isRefresh) {
+                console.log("☁️  Rolling back last migration batch on Google Apps Script...");
+                const rbRes = tryClaspRun("migrateRollback", null, true);
+                if (rbRes && rbRes.__gasException) {
+                    process.exit(1);
+                }
+                if (!rbRes) {
+                    console.error("❌ No valid response received from Google Apps Script. Ensure the latest code is pushed ('gas push -f') and an API Executable deployment is active.");
+                    process.exit(1);
+                }
+                printRemoteRollback(rbRes);
+                if (isRollback) break;
+            }
 
-    case "route:list":
-        listRoutes();
-        break;
+            console.log(
+                shouldSeed
+                    ? "☁️  Running remote migration and seeder on Google Apps Script..."
+                    : "☁️  Running remote migration on Google Apps Script..."
+            );
 
-    default:
-        console.log(`
+            const res = tryClaspRun(
+                "setupWorkspace",
+                { migrate: true, seed: shouldSeed, webAppUrl: cfg.webAppUrl || "" },
+                true
+            );
+
+            if (res && res.__gasException) {
+                process.exit(1);
+            }
+
+            if (!res || typeof res !== "object") {
+                console.error("❌ No valid response received from Google Apps Script. Ensure the latest code is pushed ('gas push -f') and an API Executable deployment is active.");
+                process.exit(1);
+            }
+
+            if (!res.status) {
+                console.error(`❌ Remote migration failed: ${res.message || JSON.stringify(res)}`);
+                process.exit(1);
+            }
+
+            printRemoteMigration(res.migration);
+
+            if (shouldSeed) {
+                printSeederSummary(res.seeder, "Remote Seeder");
+            }
+
+            if (res.SHEET_ID) {
+                console.log(`📄 Target Sheet  : ${res.SHEET_URL || res.SHEET_ID}`);
+            }
+            break;
+        }
+
+        case "db:seed":
+        case "db:seed:remote": {
+            const isRemote = command === "db:seed:remote" || flags.includes("--remote");
+            const seederClass = arg1 || getFlagValue("--class") || null;
+
+            if (!isRemote) {
+                bootGasRuntime();
+                const localRes = seederClass ? global.dbSeed(seederClass) : global.dbSeed();
+                const ok = printSeederSummary(localRes, "Local Seeder");
+                if (!ok) process.exit(1);
+                break;
+            }
+
+            const cfg = readClaspConfig();
+            const ready = await setupRemoteCredentials(cfg, false);
+            if (!ready) process.exit(1);
+
+            console.log(
+                seederClass
+                    ? `☁️  Running remote seeder (${seederClass}) on Google Apps Script...`
+                    : "☁️  Running remote seeder on Google Apps Script..."
+            );
+
+            const seedRes = tryClaspRun("dbSeed", seederClass, true);
+
+            if (seedRes && seedRes.__gasException) {
+                process.exit(1);
+            }
+
+            if (!seedRes) {
+                console.error("❌ No valid response received from Google Apps Script. Ensure the latest code is pushed ('gas push -f') and an API Executable deployment is active.");
+                process.exit(1);
+            }
+
+            const ok = printSeederSummary(seedRes, "Remote Seeder");
+            if (!ok) process.exit(1);
+            break;
+        }
+
+        case "route:list":
+            listRoutes();
+            break;
+
+        default:
+            console.log(`
 Asal-GAS CLI:
-  gas init [Title] [--id <ScriptId>] [-f]        # Create a new GAS project (or link ID) & setup .clasp.json
-  gas login                                      # Authenticate Google account via clasp
-  gas push [-f|--force] [--seed] [--setup]       # Push src/ to GAS + private OAuth sync (MYSELF)
-  gas pull                                       # Pull remote source code from GAS into src/
-  gas status                                     # Check local vs remote file status
-  gas open                                       # Open project in Google Apps Script Web Editor
-  gas deploy [Description] [--setup]             # Push & create/update production Web App deployment
+  gas init [Title] [--id <ScriptId>] [-f]                  # Create a new GAS project (or link ID) & setup .clasp.json
+  gas login                                                # Authenticate Google account via clasp
+  gas creds [-f|--force]                                   # Setup creds.json & authenticate clasp for remote execution
+  gas push [-f|--force] [--seed] [--setup]                 # Push src/ to GAS + private OAuth sync (MYSELF)
+  gas pull                                                 # Pull remote source code from GAS into src/
+  gas status                                               # Check local vs remote file status
+  gas open                                                 # Open project in Google Apps Script Web Editor
+  gas deploy [Description] [--migrate] [--seed] [--setup]  # Push, deploy Web App & optionally run remote migrate/seed
 
-  gas make:module <Entity> [-r|--plain]          # Generate Migration + Seeder + Controller
-  gas make:migration <Name>                      # Create migration in src/database/migrations/
-  gas make:controller <Name> [-r|--plain]        # Create controller in src/app/Controllers/<Name>.js
-  gas make:seeder <Name>                         # Create seeder in src/database/seeders/
+  gas make:module <Entity> [-r|--plain]                    # Generate Migration + Seeder + Controller
+  gas make:migration <Name>                                # Create migration in src/database/migrations/
+  gas make:controller <Name> [-r|--plain]                  # Create controller in src/app/Controllers/<Name>.js
+  gas make:seeder <Name>                                   # Create seeder in src/database/seeders/
 
-  gas migrate [--seed]                           # Run pending migrations locally
-  gas migrate:fresh [--seed]                     # Reset local db.json & re-run all migrations
-  gas migrate:rollback                           # Roll back the last migration batch
-  gas migrate:status                             # Display migration status
+  gas migrate [--seed] [--no-count]                        # Run pending migrations locally
+  gas migrate:fresh [--seed] [--no-count]                  # Reset local db.json & re-run all migrations
+  gas migrate:rollback                                     # Roll back the last migration batch
+  gas migrate:status                                       # Display migration status
+  gas migrate:remote [--seed] [--no-count]                 # Run pending migrations (+ optional seeder) on remote GAS
+  gas migrate:remote:rollback                              # Roll back the last migration batch on remote GAS
+  gas migrate:remote:refresh [--seed] [--no-count]         # Roll back and re-run remote migrations (+ optional seeder)
 
-  gas db:seed                                    # Run DatabaseSeeder
-  gas db:reindex                                 # Rebuild local schema metadata and row indexes
+  gas db:seed [Seeder] [--remote] [--no-count]             # Run DatabaseSeeder (or specific seeder) locally or on remote GAS
+  gas db:seed:remote [Seeder] [--no-count]                 # Run DatabaseSeeder (or specific seeder) on remote GAS
+  gas db:reindex                                           # Rebuild local schema metadata and row indexes
 
-  gas route:list [Filter] [--method <HTTP>]      # List registered API routes and middlewares
+  gas route:list [Filter] [--method <HTTP>]                # List registered API routes and middlewares
 `);
-}
+    }
+})();

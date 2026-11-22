@@ -212,13 +212,17 @@ gas deploy "v1.0.1"
 
 | Command | Description |
 | :--- | :--- |
-| `gas migrate [--seed]` | Run all pending migrations against `local/storage/db.json`. |
-| `gas migrate:fresh [--seed]` | Reset `local/storage/db.json`, re-run all migrations, and optionally seed. |
-| `gas migrate:rollback` | Roll back the last migration batch. |
-| `gas migrate:status` | List all migrations and their execution status. |
-| `gas db:seed` | Execute registered seeders via `DatabaseSeeder`. |
-| `gas db:reindex` | Rebuild local schema metadata and row lookup indexes. |
 | `gas route:list [Filter] [--method <HTTP>]` | Display all registered routes, HTTP methods, actions, middlewares, and sheets. |
+| `gas migrate [--seed] [--no-count]` | Run all pending migrations against `local/storage/db.json` (and optionally seed). |
+| `gas migrate:fresh [--seed] [--no-count]` | Reset `local/storage/db.json`, re-run all migrations, and optionally seed. |
+| `gas migrate:rollback` | Roll back the last local migration batch. |
+| `gas migrate:status` | List all migrations and their local execution status. |
+| `gas migrate:remote [--seed] [--no-count]` | Run all pending migrations (and optionally seed) on remote Google Sheets. |
+| `gas migrate:remote:rollback` | Roll back the last migration batch on remote Google Sheets. |
+| `gas migrate:remote:refresh [--seed] [--no-count]` | Roll back and re-run remote migrations (and optionally seed) on Google Sheets. |
+| `gas db:seed [Seeder] [--remote] [--no-count]` | Execute `DatabaseSeeder` (or a specific seeder) locally or on remote Google Sheets. |
+| `gas db:seed:remote [Seeder] [--no-count]` | Execute `DatabaseSeeder` (or a specific seeder) directly on remote Google Sheets. |
+| `gas db:reindex` | Rebuild local schema metadata and row lookup indexes. |
 
 ---
 
