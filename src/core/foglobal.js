@@ -145,6 +145,29 @@ var Validator = {
                                 }
                             }
                         }
+                    } else if (ruleName === "exists") {
+                        var eParts = ruleParam.split(",");
+                        var eTableName = (eParts[0] || "").trim();
+                        var eColumnName = (eParts[1] || "id").trim();
+                        var includeTrashed = (eParts[2] || "").trim() === "with_trashed";
+
+                        if (eTableName && typeof read === "function") {
+                            var existsFlt = { with: "none" };
+                            if (includeTrashed) {
+                                existsFlt.with_trashed = true;
+                            }
+                            existsFlt[eColumnName] = val;
+                            var foundRes = read(eTableName, existsFlt);
+
+                            var isFound = foundRes && foundRes.status && Array.isArray(foundRes.data) &&
+                                foundRes.data.some(function (row) {
+                                    return String(row[eColumnName]) === String(val);
+                                });
+
+                            if (!isFound) {
+                                addError(field, "The selected " + field + " is invalid.");
+                            }
+                        }
                     }
                 }
             }
