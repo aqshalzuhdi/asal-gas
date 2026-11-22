@@ -198,6 +198,7 @@ gas deploy "v1.0.1"
 | `gas status` | Check file sync status between local `src/` and remote GAS. |
 | `gas open` | Open the active project in the Google Apps Script Web Editor. |
 | `gas deploy [Description] [--setup]` | Push latest code and create or update the production Web App deployment. |
+| `gas framework:update [--dry-run] [--remote <name>]` | Pull updates for core framework and CLI files (`gas`, `src/core`, `src/middleware`, `src/config/config.js`) without overwriting project files. |
 
 ### Code Generators
 
@@ -223,6 +224,17 @@ gas deploy "v1.0.1"
 | `gas db:seed [Seeder] [--remote] [--no-count]` | Execute `DatabaseSeeder` (or a specific seeder) locally or on remote Google Sheets. |
 | `gas db:seed:remote [Seeder] [--no-count]` | Execute `DatabaseSeeder` (or a specific seeder) directly on remote Google Sheets. |
 | `gas db:reindex` | Rebuild local schema metadata and row lookup indexes. |
+
+---
+
+### Updating Framework in an Existing Project
+
+To pull framework and CLI improvements from `asal-gas` into an existing project without overwriting custom routes (`src/routes/api.js`), controllers, migrations, seeders, or local credentials:
+
+```bash
+gas framework:update --dry-run
+gas framework:update
+```
 
 ---
 
