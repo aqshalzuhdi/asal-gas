@@ -1,5 +1,4 @@
 function registerRoutes() {
-    // Public routes
     Route.get("", function () {
         return {
             status: true,
@@ -9,13 +8,12 @@ function registerRoutes() {
     });
 
     Route.middleware("throttle:5,10", function () {
-        Route.post("auth/login", "AuthController@login");
+        Route.post("login", "AuthController@login");
     });
 
-    // Authenticated routes (requires `session` parameter or payload)
     Route.middleware("auth", function () {
-        Route.post("auth/logout", "AuthController@logout");
-        Route.get("auth/verify", "AuthController@verifySession");
+        Route.post("logout", "AuthController@logout");
+        Route.get("verify", "AuthController@verifySession");
 
         Route.resource("users", "UserController");
     });

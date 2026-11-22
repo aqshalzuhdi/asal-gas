@@ -3,11 +3,17 @@ var BaseController = {
         var cfg = config || {};
         var defaultSheet = cfg.sheet || null;
         var defaultWith = Array.isArray(cfg.with) ? cfg.with : [];
+        var defaultView = cfg.view || null;
 
         function defaultIndex(ctx, routeOpts) {
             var opts = routeOpts || {};
             var targetSheet = opts.sheet || this.sheet;
+            var targetView = opts.view || this.defaultView;
+
             if (!targetSheet) {
+                if (targetView && ctx && typeof ctx.wantsJson === "function" && !ctx.wantsJson()) {
+                    return view(targetView, { params: ctx.params || {} });
+                }
                 return failResponse("404 Not Found", 404);
             }
 
@@ -19,7 +25,18 @@ var BaseController = {
             var perPage = ctx.params.per_page || 10;
             var sort = ctx.params.sort || null;
 
-            return read(targetSheet, flt, page, perPage, sort);
+            var res = read(targetSheet, flt, page, perPage, sort);
+
+            if (targetView && ctx && typeof ctx.wantsJson === "function" && !ctx.wantsJson()) {
+                return view(targetView, {
+                    items: res.data || [],
+                    meta: res.meta || null,
+                    pagination: res.meta || null,
+                    result: res
+                });
+            }
+
+            return res;
         }
 
         function defaultStore(ctx, routeOpts) {
@@ -178,6 +195,23 @@ var BaseController = {
         var controller = {
             sheet: defaultSheet,
             with: defaultWith,
+            defaultView: defaultView,
+
+            view: function (viewName, data, statusCode) {
+                return view(viewName, data, statusCode);
+            },
+
+            respond: function (ctx, viewName, data, statusCode) {
+                if (ctx && typeof ctx.wantsJson === "function" && ctx.wantsJson()) {
+                    return {
+                        status: true,
+                        code: statusCode || 200,
+                        message: "Success",
+                        data: data !== undefined ? data : null
+                    };
+                }
+                return view(viewName, data || {}, statusCode || 200);
+            },
 
             index: typeof cfg.index === "function" ? cfg.index : defaultIndex,
             store: typeof cfg.store === "function" ? cfg.store : defaultStore,
@@ -197,6 +231,7 @@ var BaseController = {
         var reservedKeys = {
             sheet: true,
             with: true,
+            view: true,
             index: true,
             store: true,
             update: true,
@@ -206,7 +241,7 @@ var BaseController = {
         };
 
         Object.keys(cfg).forEach(function (key) {
-            if (!reservedKeys[key] && typeof cfg[key] === "function") {
+            if (!reservedKeys[key]) {
                 controller[key] = cfg[key];
             }
         });

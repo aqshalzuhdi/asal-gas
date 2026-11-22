@@ -78,5 +78,14 @@ const CONFIG = {
         }
 
         throw new Error("Missing required configuration: BASE_URL. Set it in Script Properties or access the /exec Web App.");
-    }
+    },
+
+    get API_PREFIX() {
+        var raw = this.getOptional("API_PREFIX", "api");
+        var cleaned = String(raw === null || raw === undefined ? "api" : raw)
+            .trim()
+            .replace(/^\/+|\/+$/g, "");
+        if (cleaned.toLowerCase() === "none" || cleaned === "-") return "";
+        return cleaned;
+    },
 };
