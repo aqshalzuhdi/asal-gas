@@ -1,7 +1,15 @@
 function doGet(e) {
-    return dispatchHttpRequest(e, "GET");
+    try {
+        return dispatchHttpRequest(e, "GET");
+    } catch (err) {
+        return handleHttpError(err, e, { method: "GET" });
+    }
 }
 
 function doPost(e) {
-    return dispatchHttpRequest(e, "POST");
+    try {
+        return dispatchHttpRequest(e, "POST");
+    } catch (err) {
+        return handleHttpError(err, e, { method: "POST" });
+    }
 }

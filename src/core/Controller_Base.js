@@ -8,7 +8,7 @@ var BaseController = {
             var opts = routeOpts || {};
             var targetSheet = opts.sheet || this.sheet;
             if (!targetSheet) {
-                return { status: false, code: 404, message: "404 Not Found" };
+                return failResponse("404 Not Found", 404);
             }
 
             var relations = (opts.with !== undefined) ? opts.with : this.with;
@@ -26,11 +26,11 @@ var BaseController = {
             var opts = routeOpts || {};
             var targetSheet = opts.sheet || this.sheet;
             if (!targetSheet) {
-                return { status: false, code: 404, message: "404 Not Found" };
+                return failResponse("404 Not Found", 404);
             }
 
             if (ctx.payload.data === undefined) {
-                return { status: false, message: "Payload data is required." };
+                return failResponse("Payload data is required.", 422);
             }
 
             if (typeof this.beforeStore === "function") {
@@ -56,11 +56,11 @@ var BaseController = {
             var opts = routeOpts || {};
             var targetSheet = opts.sheet || this.sheet;
             if (!targetSheet) {
-                return { status: false, code: 404, message: "404 Not Found" };
+                return failResponse("404 Not Found", 404);
             }
 
             if (ctx.payload.data === undefined) {
-                return { status: false, message: "Payload data is required." };
+                return failResponse("Payload data is required.", 422);
             }
 
             if (typeof this.beforeUpdate === "function") {
@@ -86,12 +86,12 @@ var BaseController = {
             var opts = routeOpts || {};
             var targetSheet = opts.sheet || this.sheet;
             if (!targetSheet) {
-                return { status: false, code: 404, message: "404 Not Found" };
+                return failResponse("404 Not Found", 404);
             }
 
             var targetId = ctx.payload.id !== undefined ? ctx.payload.id : ctx.params.id;
             if (targetId === undefined || targetId === "") {
-                return { status: false, message: "Payload id is required." };
+                return failResponse("Payload id is required.", 422);
             }
 
             if (typeof this.beforeDestroy === "function") {
@@ -117,12 +117,12 @@ var BaseController = {
             var opts = routeOpts || {};
             var targetSheet = opts.sheet || this.sheet;
             if (!targetSheet) {
-                return { status: false, code: 404, message: "404 Not Found" };
+                return failResponse("404 Not Found", 404);
             }
 
             var targetId = ctx.payload.id !== undefined ? ctx.payload.id : ctx.params.id;
             if (targetId === undefined || targetId === "") {
-                return { status: false, message: "Payload id is required." };
+                return failResponse("Payload id is required.", 422);
             }
 
             if (typeof this.beforeRestore === "function") {
@@ -148,12 +148,12 @@ var BaseController = {
             var opts = routeOpts || {};
             var targetSheet = opts.sheet || this.sheet;
             if (!targetSheet) {
-                return { status: false, code: 404, message: "404 Not Found" };
+                return failResponse("404 Not Found", 404);
             }
 
             var targetId = ctx.payload.id !== undefined ? ctx.payload.id : ctx.params.id;
             if (targetId === undefined || targetId === "") {
-                return { status: false, message: "Payload id is required." };
+                return failResponse("Payload id is required.", 422);
             }
 
             if (typeof this.beforeForceDelete === "function") {

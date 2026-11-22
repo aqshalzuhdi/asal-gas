@@ -199,8 +199,39 @@ function installGasGlobals() {
             },
             setProperty: (k, v) => {
                 const props = JSON.parse(fs.readFileSync(PROPS_FILE, "utf8"));
-                props[k] = String(v);
+                const nextVal = String(v);
+                if (props[k] === nextVal) return;
+                props[k] = nextVal;
                 fs.writeFileSync(PROPS_FILE, JSON.stringify(props, null, 2));
+            },
+            setProperties: (newProps, deleteAllOthers = false) => {
+                const current = JSON.parse(fs.readFileSync(PROPS_FILE, "utf8"));
+                const next = deleteAllOthers ? {} : { ...current };
+                let changed = deleteAllOthers && Object.keys(current).length > 0;
+
+                if (newProps && typeof newProps === "object") {
+                    for (const [k, v] of Object.entries(newProps)) {
+                        if (v !== undefined && v !== null) {
+                            const nextVal = String(v);
+                            if (next[k] !== nextVal) {
+                                next[k] = nextVal;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+
+                if (changed) {
+                    fs.writeFileSync(PROPS_FILE, JSON.stringify(next, null, 2));
+                }
+            },
+            deleteProperty: (k) => {
+                const props = JSON.parse(fs.readFileSync(PROPS_FILE, "utf8"));
+                delete props[k];
+                fs.writeFileSync(PROPS_FILE, JSON.stringify(props, null, 2));
+            },
+            deleteAllProperties: () => {
+                fs.writeFileSync(PROPS_FILE, JSON.stringify({}, null, 2));
             },
             getProperties: () => JSON.parse(fs.readFileSync(PROPS_FILE, "utf8"))
         })
@@ -227,6 +258,21 @@ function installGasGlobals() {
             _content: String(content),
             _mimeType: "text/plain",
             setMimeType(type) { this._mimeType = type; return this; },
+            getMimeType() { return this._mimeType; },
+            getContent() { return this._content; }
+        })
+    };
+
+    global.HtmlService = {
+        XFrameOptionsMode: { ALLOWALL: "ALLOWALL", DEFAULT: "DEFAULT" },
+        createHtmlOutput: (html = "") => ({
+            _content: String(html),
+            _title: "",
+            _statusCode: 200,
+            setTitle(t) { this._title = String(t); return this; },
+            getTitle() { return this._title; },
+            setXFrameOptionsMode() { return this; },
+            getMimeType() { return "HTML"; },
             getContent() { return this._content; }
         })
     };

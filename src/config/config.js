@@ -1,15 +1,22 @@
 const CONFIG = {
     _runtime: {},
 
+    defaults: {
+        APP_NAME: "Asal-GAS",
+        APP_MODE: "web",
+        APP_ENV: "production",
+        APP_DEBUG: "false"
+    },
+
     has: function (key) {
-        if (this._runtime[key]) return true;
+        if (this._runtime[key] !== undefined && String(this._runtime[key]).trim() !== "") return true;
         const value = PropertiesService.getScriptProperties().getProperty(key);
         return value !== null && String(value).trim() !== "";
     },
 
     get: function (key) {
-        if (this._runtime[key]) {
-            return this._runtime[key];
+        if (this._runtime[key] !== undefined && String(this._runtime[key]).trim() !== "") {
+            return String(this._runtime[key]).trim();
         }
 
         const value = PropertiesService.getScriptProperties().getProperty(key);
@@ -20,11 +27,27 @@ const CONFIG = {
     },
 
     getOptional: function (key, defaultValue) {
-        if (this._runtime[key]) {
-            return this._runtime[key];
+        if (this._runtime[key] !== undefined && String(this._runtime[key]).trim() !== "") {
+            return String(this._runtime[key]).trim();
         }
         const value = PropertiesService.getScriptProperties().getProperty(key);
-        return value !== null && String(value).trim() !== "" ? String(value).trim() : defaultValue;
+        if (value !== null && String(value).trim() !== "") {
+            return String(value).trim();
+        }
+        if (defaultValue !== undefined) {
+            return defaultValue;
+        }
+        return Object.prototype.hasOwnProperty.call(this.defaults, key) ? this.defaults[key] : null;
+    },
+
+    isDebug: function () {
+        const val = this.getOptional("APP_DEBUG", false);
+        if (typeof val === "boolean") return val;
+        if (typeof val === "number") return val === 1;
+        if (typeof val === "string") {
+            return ["true", "1", "yes", "on"].indexOf(val.trim().toLowerCase()) !== -1;
+        }
+        return Boolean(val);
     },
 
     get SHEET_ID() {
@@ -51,103 +74,9 @@ const CONFIG = {
                     this._runtime.BASE_URL = serviceUrl;
                     return serviceUrl;
                 }
-            } catch (_) {}
+            } catch (_) { }
         }
 
         throw new Error("Missing required configuration: BASE_URL. Set it in Script Properties or access the /exec Web App.");
     }
 };
-
-var WorkspaceSetup = {
-    DEFAULT_SPREADSHEET_NAME: "Asal-GAS Database",
-
-    init: function (options) {
-        if (typeof ScriptApp === "undefined") {
-            return { status: false, message: "This setup can only run inside Google Apps Script." };
-        }
-
-        options = options || {};
-        var lock = LockService.getScriptLock();
-        lock.waitLock(30000);
-
-        try {
-            var props = PropertiesService.getScriptProperties();
-            var sheetId = props.getProperty("SHEET_ID") || "";
-            var baseUrl = props.getProperty("BASE_URL") || "";
-            var isFirstSetup = false;
-
-            if (!sheetId) {
-                var appName = CONFIG.has("APP_NAME")
-                    ? CONFIG.get("APP_NAME") + " - Database"
-                    : this.DEFAULT_SPREADSHEET_NAME;
-
-                var newSs = SpreadsheetApp.create(appName);
-                sheetId = newSs.getId();
-                props.setProperty("SHEET_ID", sheetId);
-                isFirstSetup = true;
-            }
-
-            var serviceUrl = "";
-            try {
-                serviceUrl = ScriptApp.getService().getUrl() || "";
-            } catch (_) {}
-
-            if (options.webAppUrl && baseUrl !== options.webAppUrl) {
-                baseUrl = options.webAppUrl;
-                props.setProperty("BASE_URL", baseUrl);
-            } else if (!baseUrl && serviceUrl.indexOf("/exec") !== -1) {
-                baseUrl = serviceUrl;
-                props.setProperty("BASE_URL", baseUrl);
-            }
-
-            CONFIG._runtime.SHEET_ID = sheetId;
-            if (baseUrl) CONFIG._runtime.BASE_URL = baseUrl;
-
-            var migrationRes = null;
-            var seederRes = null;
-
-            if ((isFirstSetup || options.migrate === true) && typeof migrate === "function") {
-                migrationRes = migrate();
-            }
-            if ((isFirstSetup || options.seed === true) && typeof dbSeed === "function") {
-                seederRes = dbSeed();
-            }
-
-            var sheetUrl = "https://docs.google.com/spreadsheets/d/" + sheetId + "/edit";
-            var result = {
-                status: true,
-                first_setup: isFirstSetup,
-                SHEET_ID: sheetId,
-                BASE_URL: baseUrl,
-                SHEET_URL: sheetUrl,
-                migration: migrationRes,
-                seeder: seederRes
-            };
-
-            this._printReport(result);
-            return result;
-        } finally {
-            lock.releaseLock();
-        }
-    },
-
-    _printReport: function (res) {
-        Logger.log("====================================================================");
-        Logger.log(" WORKSPACE ENVIRONMENT & SCRIPT PROPERTIES REPORT");
-        Logger.log("====================================================================");
-        Logger.log((res.first_setup ? "[CREATED]  " : "[EXISTING] ") + "SHEET_ID = " + res.SHEET_ID);
-        Logger.log("           URL: " + res.SHEET_URL);
-        Logger.log("[ACTIVE]   BASE_URL = " + (res.BASE_URL || "(Auto-captured on first /exec request, or set manually from 'gas deploy' output)"));
-        if (res.migration) {
-            Logger.log("[MIGRATE]  " + JSON.stringify(res.migration));
-        }
-        if (res.seeder) {
-            Logger.log("[SEEDER]   " + JSON.stringify(res.seeder));
-        }
-        Logger.log("====================================================================");
-    }
-};
-
-function setupWorkspace(options) {
-    return WorkspaceSetup.init(options);
-}

@@ -2,8 +2,11 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const { installGasGlobals } = require("./GasMocks");
+const { loadLocalEnv } = require("./EnvLoader");
 
-const SRC_DIR = path.join(__dirname, "../../src");
+const ROOT_DIR = path.join(__dirname, "../..");
+const SRC_DIR = path.join(ROOT_DIR, "src");
+const ENV_FILE = path.join(ROOT_DIR, ".env");
 
 const REQUIRED_CORE = [
     "config/config.js",
@@ -29,6 +32,17 @@ const LAYER_FOLDERS = [
     "routes"
 ];
 
+const OVERRIDABLE_ENV_KEYS = [
+    "APP_NAME",
+    "APP_MODE",
+    "APP_ENV",
+    "APP_DEBUG",
+    "SHEET_ID",
+    "BASE_URL",
+    "JWT_SECRET",
+    "API_KEY"
+];
+
 function getJsFilesRecursive(dir) {
     if (!fs.existsSync(dir)) return [];
     const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
@@ -45,8 +59,38 @@ function getJsFilesRecursive(dir) {
     return files;
 }
 
+function hydrateLocalEnvToProperties() {
+    const fileEnv = loadLocalEnv(ENV_FILE);
+    const mergedEnv = { ...fileEnv };
+
+    for (const key of OVERRIDABLE_ENV_KEYS) {
+        if (process.env[key] !== undefined && String(process.env[key]).trim() !== "") {
+            mergedEnv[key] = String(process.env[key]).trim();
+        }
+    }
+
+    const keys = Object.keys(mergedEnv);
+    if (keys.length === 0) return;
+
+    if (typeof PropertiesService !== "undefined" && PropertiesService.getScriptProperties) {
+        const props = PropertiesService.getScriptProperties();
+        const updates = {};
+
+        for (const key of keys) {
+            const val = String(mergedEnv[key] ?? "").trim();
+            if (val === "") continue;
+            updates[key] = val;
+        }
+
+        if (Object.keys(updates).length > 0 && typeof props.setProperties === "function") {
+            props.setProperties(updates, false);
+        }
+    }
+}
+
 function bootGasRuntime() {
     installGasGlobals();
+    hydrateLocalEnvToProperties();
 
     for (const relPath of REQUIRED_CORE) {
         const fullPath = path.join(SRC_DIR, relPath);

@@ -1,16 +1,51 @@
 const http = require("http");
 const net = require("net");
+const path = require("path");
+const { loadLocalEnv } = require("./runtime/EnvLoader");
 const { bootGasRuntime } = require("./runtime/GasLoader");
+
+const envMap = loadLocalEnv(path.resolve(__dirname, "../.env"));
+for (const [key, val] of Object.entries(envMap)) {
+    if (!(key in process.env) && val !== "") {
+        process.env[key] = val;
+    }
+}
 
 bootGasRuntime();
 
 const START_PORT = Number(process.env.PORT) || 3000;
 const MAX_PORT = START_PORT + 100;
 
+function detectHtmlResponse(output, rawText) {
+    if (output && typeof output.getMimeType === "function") {
+        const mime = String(output.getMimeType() || "").toUpperCase();
+        if (mime.includes("HTML")) return true;
+        if (mime.includes("JSON")) return false;
+    }
+    const trimmed = String(rawText || "").trim();
+    return trimmed.startsWith("<!DOCTYPE html") || trimmed.startsWith("<html");
+}
+
+function extractStatusCode(output, rawText, isHtml) {
+    if (output && typeof output._statusCode === "number") {
+        return output._statusCode;
+    }
+    if (isHtml) {
+        const metaMatch = String(rawText || "").match(/<meta\s+name=["']http-status["']\s+content=["'](\d{3})["']/i);
+        if (metaMatch) return Number(metaMatch[1]);
+        return 200;
+    }
+    try {
+        const parsed = JSON.parse(rawText);
+        if (parsed && typeof parsed.code === "number") return parsed.code;
+    } catch (_) { }
+    return 200;
+}
+
 const server = http.createServer((req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, X-Requested-With");
 
     if (req.method === "OPTIONS") {
         res.writeHead(204);
@@ -19,9 +54,10 @@ const server = http.createServer((req, res) => {
 
     const parsedUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     const query = Object.fromEntries(parsedUrl.searchParams.entries());
+    const cleanPath = parsedUrl.pathname ? parsedUrl.pathname.replace(/^\/+|\/+$/g, "") : "";
 
-    if (!query.route && parsedUrl.pathname && parsedUrl.pathname !== "/") {
-        query.route = parsedUrl.pathname.replace(/^\/+|\/+$/g, "");
+    if (!query.route && cleanPath) {
+        query.route = cleanPath;
     }
 
     let body = "";
@@ -45,24 +81,48 @@ const server = http.createServer((req, res) => {
         const event = {
             parameter: query,
             parameters: parameters,
+            pathInfo: cleanPath,
+            queryString: parsedUrl.search.replace(/^\?/, ""),
+            headers: req.headers || {},
             postData: body ? { contents: body, type: req.headers["content-type"] || "application/json" } : null
         };
 
         try {
             const output = req.method === "GET" ? global.doGet(event) : global.doPost(event);
             const rawText = typeof output?.getContent === "function" ? output.getContent() : JSON.stringify(output);
-            let statusCode = 200;
-            try {
-                const parsed = JSON.parse(rawText);
-                if (parsed && typeof parsed.code === "number") statusCode = parsed.code;
-            } catch (_) { }
+            const isHtml = detectHtmlResponse(output, rawText);
+            const statusCode = extractStatusCode(output, rawText, isHtml);
 
-            res.writeHead(statusCode, { "Content-Type": "application/json" });
+            res.writeHead(statusCode, {
+                "Content-Type": isHtml ? "text/html; charset=utf-8" : "application/json; charset=utf-8"
+            });
             res.end(rawText);
         } catch (err) {
             console.error("[LOCAL SERVER ERROR]", err);
-            res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ status: false, message: err.message }));
+
+            if (typeof global.handleHttpError === "function") {
+                const errOut = global.handleHttpError(err, event, {
+                    route: query.route || cleanPath,
+                    method: req.method,
+                    action: query.action || ""
+                });
+                const errText = typeof errOut?.getContent === "function" ? errOut.getContent() : JSON.stringify(errOut);
+                const isHtml = detectHtmlResponse(errOut, errText);
+                const statusCode = extractStatusCode(errOut, errText, isHtml) || 500;
+
+                res.writeHead(statusCode, {
+                    "Content-Type": isHtml ? "text/html; charset=utf-8" : "application/json; charset=utf-8"
+                });
+                return res.end(errText);
+            }
+
+            const debug = typeof global.isDebugEnabled === "function" && global.isDebugEnabled();
+            res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify(
+                debug
+                    ? { status: false, code: 500, error_type: err.name || "Error", message: err.message, stack: String(err.stack || "") }
+                    : { status: false, code: 500, message: "Internal server error." }
+            ));
         }
     });
 });

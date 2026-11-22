@@ -9,6 +9,7 @@ const readline = require("readline");
 const { execSync, spawnSync, spawn } = require("child_process");
 const { bootGasRuntime } = require("./local/runtime/GasLoader");
 const { DB_FILE } = require("./local/runtime/GasMocks");
+const { loadLocalEnv } = require("./local/runtime/EnvLoader");
 
 const [, , command, ...rawArgs] = process.argv;
 const flags = rawArgs.filter((a) => a.startsWith("-"));
@@ -30,7 +31,8 @@ const DEFAULT_FILE_PUSH_ORDER = [
     "src/core/Database_Migration.js",
     "src/core/Database_Seeder.js",
     "src/core/Controller_Base.js",
-    "src/middleware/middleware.js"
+    "src/middleware/middleware.js",
+    "src/core/env_sync.js"
 ];
 
 function toPascalCase(str) {
@@ -1012,6 +1014,7 @@ function pushAndSyncGas() {
     syncApiExecutableDeployment(cfg);
 
     const remoteRes = tryClaspRun("setupWorkspace", {
+        env: loadLocalEnv(path.join(ROOT_DIR, ".env")),
         migrate: true,
         seed: shouldSeed,
         webAppUrl: cfg.webAppUrl || ""
@@ -1087,7 +1090,12 @@ async function deployGasWebApp(description) {
 
     const bootRes = tryClaspRun(
         "setupWorkspace",
-        { webAppUrl, migrate: shouldMigrate, seed: shouldSeed },
+        {
+            webAppUrl,
+            env: loadLocalEnv(path.join(ROOT_DIR, ".env")),
+            migrate: shouldMigrate,
+            seed: shouldSeed
+        },
         shouldMigrate || shouldSeed
     );
 
@@ -1519,7 +1527,12 @@ function listRoutes() {
 
             const res = tryClaspRun(
                 "setupWorkspace",
-                { migrate: true, seed: shouldSeed, webAppUrl: cfg.webAppUrl || "" },
+                {
+                    env: loadLocalEnv(path.join(ROOT_DIR, ".env")),
+                    migrate: true,
+                    seed: shouldSeed,
+                    webAppUrl: cfg.webAppUrl || ""
+                },
                 true
             );
 
