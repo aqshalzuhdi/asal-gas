@@ -1,19 +1,90 @@
 var Route = (function () {
     var _routes = {};
+    var _namedRoutes = {};
     var _middlewareStack = [];
+    var _prefixStack = [];
     var _booted = false;
+
+    var _currentRouteLayer = null;
+
+    function getAppMode() {
+        if (typeof CONFIG !== "undefined") {
+            if (CONFIG.APP_MODE) return String(CONFIG.APP_MODE).trim().toLowerCase();
+            if (typeof CONFIG.getOptional === "function") {
+                return String(CONFIG.getOptional("APP_MODE", "web") || "web").trim().toLowerCase();
+            }
+        }
+        return "web";
+    }
+
+    function getApiPrefix() {
+        if (typeof CONFIG !== "undefined") {
+            if (CONFIG.API_PREFIX !== undefined) {
+                return String(CONFIG.API_PREFIX || "").trim().replace(/^\/+|\/+$/g, "");
+            }
+            if (typeof CONFIG.getOptional === "function") {
+                var raw = String(CONFIG.getOptional("API_PREFIX", "api") || "").trim().replace(/^\/+|\/+$/g, "");
+                return (raw.toLowerCase() === "none" || raw === "-") ? "" : raw;
+            }
+        }
+        return "api";
+    }
+
+    function runApiLayer(fn) {
+        if (typeof fn !== "function") return;
+        var apiPrefix = getApiPrefix();
+        _currentRouteLayer = "api";
+        try {
+            if (apiPrefix) {
+                Route.prefix(apiPrefix, fn);
+            } else {
+                fn();
+            }
+        } finally {
+            _currentRouteLayer = null;
+        }
+    }
 
     function boot() {
         if (_booted) return;
         _booted = true;
-        if (typeof registerRoutes === "function") {
-            registerRoutes();
+
+        if (typeof registerWebRoutes === "function") {
+            _currentRouteLayer = "web";
+            try {
+                registerWebRoutes();
+            } finally {
+                _currentRouteLayer = null;
+            }
         }
+
+        runApiLayer(typeof registerApiRoutes === "function" ? registerApiRoutes : null);
+        runApiLayer(typeof registerRoutes === "function" ? registerRoutes : null);
     }
 
     function normalizeRoutePath(rawPath) {
         if (rawPath === undefined || rawPath === null) return "";
         return String(rawPath).trim().replace(/^\/+|\/+$/g, "");
+    }
+
+    function currentPrefix() {
+        var parts = [];
+        for (var i = 0; i < _prefixStack.length; i++) {
+            var seg = normalizeRoutePath(_prefixStack[i]);
+            if (seg) parts.push(seg);
+        }
+        return parts.join("/");
+    }
+
+    function applyPrefix(routeName) {
+        var clean = normalizeRoutePath(routeName);
+        var prefix = currentPrefix();
+        if (!prefix) return clean;
+        if (!clean) return prefix;
+        if (clean === prefix || clean.indexOf(prefix + "/") === 0) {
+            return clean;
+        }
+        return prefix + "/" + clean;
     }
 
     function currentMiddlewares() {
@@ -69,27 +140,81 @@ var Route = (function () {
         return null;
     }
 
+    function buildFluentBuilder(entryRefs) {
+        return {
+            name: function (routeAlias) {
+                var alias = String(routeAlias || "").trim();
+                if (alias && entryRefs.length > 0) {
+                    _namedRoutes[alias] = entryRefs[0].path;
+                    for (var i = 0; i < entryRefs.length; i++) {
+                        entryRefs[i].entry.name = alias;
+                    }
+                }
+                return this;
+            },
+            middleware: function (mwNames) {
+                var list = Array.isArray(mwNames) ? mwNames : [mwNames];
+                for (var i = 0; i < entryRefs.length; i++) {
+                    var target = entryRefs[i].entry;
+                    for (var j = 0; j < list.length; j++) {
+                        if (target.middlewares.indexOf(list[j]) === -1) {
+                            target.middlewares.push(list[j]);
+                        }
+                    }
+                }
+                return this;
+            }
+        };
+    }
+
     function register(methods, routeName, handlerSpec, options) {
-        var cleanRoute = normalizeRoutePath(routeName);
+        var cleanRoute = applyPrefix(routeName);
+        var appMode = getAppMode();
+
+        if (_currentRouteLayer === "web" && appMode !== "web") {
+            if (cleanRoute !== "" && cleanRoute !== "index") {
+                return buildFluentBuilder([]);
+            }
+        }
+
         if (!_routes[cleanRoute]) {
             _routes[cleanRoute] = [];
         }
 
-        var opts = options || {};
+        var apiPrefix = (typeof CONFIG !== "undefined" && CONFIG.API_PREFIX !== undefined)
+            ? CONFIG.API_PREFIX
+            : "api";
+
+        var opts = Object.assign({}, options || {});
+        if (
+            _currentRouteLayer === "api" ||
+            (apiPrefix && (cleanRoute === apiPrefix || cleanRoute.indexOf(apiPrefix + "/") === 0))
+        ) {
+            opts._isApi = true;
+        } else if (_currentRouteLayer === "web" || opts.web === true) {
+            opts._isWeb = true;
+        }
+
         var normalizedMethods = [];
         for (var i = 0; i < methods.length; i++) {
             normalizedMethods.push(String(methods[i]).toUpperCase());
         }
 
-        _routes[cleanRoute].push({
+        var entryObj = {
             methods: normalizedMethods,
             action: opts.action || null,
+            name: opts.name || null,
             middlewares: currentMiddlewares(),
             handlerSpec: handlerSpec,
             options: opts
-        });
+        };
 
-        return Route;
+        if (opts.name) {
+            _namedRoutes[String(opts.name).trim()] = cleanRoute;
+        }
+
+        _routes[cleanRoute].push(entryObj);
+        return buildFluentBuilder([{ path: cleanRoute, entry: entryObj }]);
     }
 
     function matchDynamicRoute(normalizedRoute) {
@@ -186,6 +311,16 @@ var Route = (function () {
     }
 
     return {
+        prefix: function (prefixStr, callback) {
+            _prefixStack.push(prefixStr);
+            try {
+                callback();
+            } finally {
+                _prefixStack.pop();
+            }
+            return Route;
+        },
+
         middleware: function (middlewareNames, callback) {
             var list = Array.isArray(middlewareNames) ? middlewareNames : [middlewareNames];
             _middlewareStack.push(list);
@@ -193,6 +328,23 @@ var Route = (function () {
                 callback();
             } finally {
                 _middlewareStack.pop();
+            }
+            return Route;
+        },
+
+        group: function (options, callback) {
+            var opts = options || {};
+            var hasPrefix = opts.prefix !== undefined && opts.prefix !== null && String(opts.prefix).trim() !== "";
+            var hasMw = opts.middleware !== undefined && opts.middleware !== null;
+
+            if (hasPrefix) _prefixStack.push(opts.prefix);
+            if (hasMw) _middlewareStack.push(Array.isArray(opts.middleware) ? opts.middleware : [opts.middleware]);
+
+            try {
+                callback();
+            } finally {
+                if (hasMw) _middlewareStack.pop();
+                if (hasPrefix) _prefixStack.pop();
             }
             return Route;
         },
@@ -221,13 +373,16 @@ var Route = (function () {
             return register(methods, routeName, handlerSpec, options);
         },
 
-        view: function (routeName, handlerSpec, options) {
-            return register(["GET"], routeName, handlerSpec, Object.assign({}, options, { web: true }));
+        view: function (routeName, viewName, viewData, options) {
+            var opts = Object.assign({}, options || {}, { web: true });
+            return register(["GET"], routeName, function () {
+                return view(viewName, viewData || {});
+            }, opts);
         },
 
         resource: function (routeName, controller, options) {
             var ctrl = controller;
-            var opts = Object.assign({}, options || {}, { _isResource: true });
+            var opts = Object.assign({}, options || {}, { _isResource: true, _isApi: true });
 
             if (
                 ctrl &&
@@ -235,7 +390,7 @@ var Route = (function () {
                 typeof ctrl.index !== "function" &&
                 typeof ctrl.store !== "function"
             ) {
-                opts = Object.assign({}, ctrl, { _isResource: true });
+                opts = Object.assign({}, ctrl, { _isResource: true, _isApi: true });
                 ctrl = null;
             }
 
@@ -255,6 +410,10 @@ var Route = (function () {
                     method: "store",
                     args: [opts]
                 }, Object.assign({}, opts, { action: "create" }));
+            }
+
+            if (abilities.update) {
+                // fallback check
             }
 
             if (abilities.indexOf("update") !== -1) {
@@ -304,6 +463,11 @@ var Route = (function () {
             return Route;
         },
 
+        resolveName: function (name) {
+            boot();
+            return _namedRoutes[String(name || "").trim()] || null;
+        },
+
         resolve: function (routeName, method, action) {
             boot();
 
@@ -311,11 +475,51 @@ var Route = (function () {
             var routeParams = {};
             var entries = _routes[normalizedRoute] || (normalizedRoute === "" ? _routes["/"] : null);
 
-            if (!entries) {
-                var dynamicMatch = matchDynamicRoute(normalizedRoute);
-                if (dynamicMatch) {
-                    entries = dynamicMatch.entries;
-                    routeParams = dynamicMatch.routeParams;
+            if (!entries && getAppMode() !== "web") {
+                if (normalizedRoute === "index" && _routes[""]) {
+                    entries = _routes[""];
+                } else if (normalizedRoute === "" && _routes["index"]) {
+                    entries = _routes["index"];
+                }
+            }
+
+            // Pencocokan rute berparameter seperti users/:id/edit dan users/:id
+            if (!entries && normalizedRoute !== "") {
+                var actualSegs = normalizedRoute.split("/");
+                var patternKeys = Object.keys(_routes);
+
+                for (var pk = 0; pk < patternKeys.length; pk++) {
+                    var patternKey = patternKeys[pk];
+                    if (patternKey.indexOf(":") === -1) continue;
+
+                    var patternSegs = patternKey.split("/");
+                    if (patternSegs.length !== actualSegs.length) continue;
+
+                    var extracted = {};
+                    var isSegMatch = true;
+
+                    for (var s = 0; s < patternSegs.length; s++) {
+                        var pSeg = patternSegs[s];
+                        var aSeg = actualSegs[s];
+
+                        if (pSeg.charAt(0) === ":") {
+                            var paramName = pSeg.slice(1);
+                            try {
+                                extracted[paramName] = decodeURIComponent(aSeg);
+                            } catch (_) {
+                                extracted[paramName] = aSeg;
+                            }
+                        } else if (pSeg !== aSeg) {
+                            isSegMatch = false;
+                            break;
+                        }
+                    }
+
+                    if (isSegMatch) {
+                        entries = _routes[patternKey];
+                        routeParams = extracted;
+                        break;
+                    }
                 }
             }
 
@@ -406,7 +610,12 @@ var Route = (function () {
                 };
             }
 
-            return { statusCode: 200, route: matchedEntry };
+            return {
+                statusCode: 200,
+                route: Object.assign({}, matchedEntry, {
+                    routeParams: routeParams
+                })
+            };
         },
 
         list: function () {
@@ -463,6 +672,77 @@ var Route = (function () {
         }
     };
 })();
+
+function url(rawPath, queryParams) {
+    var cleanPath = String(rawPath || "").trim().replace(/^\/+|\/+$/g, "");
+    var baseUrl = "";
+
+    try {
+        if (typeof CONFIG !== "undefined" && CONFIG.BASE_URL) {
+            baseUrl = String(CONFIG.BASE_URL).replace(/\/+$/g, "");
+        }
+    } catch (_) { }
+
+    var paramsList = [];
+    if (queryParams && typeof queryParams === "object") {
+        Object.keys(queryParams).forEach(function (k) {
+            if (queryParams[k] !== undefined && queryParams[k] !== null) {
+                paramsList.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(queryParams[k])));
+            }
+        });
+    }
+
+    var isGasExec = /\/(exec|dev)$/i.test(baseUrl);
+    if (isGasExec) {
+        if (cleanPath !== "") {
+            paramsList.unshift("route=" + encodeURIComponent(cleanPath));
+        }
+        return baseUrl + (paramsList.length > 0 ? "?" + paramsList.join("&") : "");
+    }
+
+    var pathPart = cleanPath === "" ? "/" : "/" + cleanPath;
+    return baseUrl + pathPart + (paramsList.length > 0 ? "?" + paramsList.join("&") : "");
+}
+
+function apiUrl(rawPath, queryParams) {
+    var apiPrefix = (typeof CONFIG !== "undefined" && CONFIG.API_PREFIX !== undefined)
+        ? String(CONFIG.API_PREFIX).trim().replace(/^\/+|\/+$/g, "")
+        : "api";
+
+    var clean = String(rawPath || "").trim().replace(/^\/+|\/+$/g, "");
+    var prefixed = "";
+
+    if (!apiPrefix) {
+        prefixed = clean;
+    } else if (clean === "" || clean === apiPrefix) {
+        prefixed = apiPrefix;
+    } else if (clean.indexOf(apiPrefix + "/") === 0) {
+        prefixed = clean;
+    } else {
+        prefixed = apiPrefix + "/" + clean;
+    }
+
+    return url(prefixed, queryParams);
+}
+function route(routeName, params) {
+    var pattern = Route.resolveName(routeName);
+    if (!pattern) {
+        return url(routeName, params);
+    }
+
+    var queryClone = params && typeof params === "object" ? Object.assign({}, params) : {};
+    var resolvedPath = pattern.replace(/:([a-zA-Z0-9_]+)|\{([a-zA-Z0-9_]+)\}/g, function (_, p1, p2) {
+        var key = p1 || p2;
+        if (Object.prototype.hasOwnProperty.call(queryClone, key)) {
+            var val = queryClone[key];
+            delete queryClone[key];
+            return encodeURIComponent(String(val));
+        }
+        return "";
+    });
+
+    return url(resolvedPath, queryClone);
+}
 
 var Middlewares = {
     auth: function (ctx) {
@@ -548,7 +828,9 @@ function dispatchHttpRequest(e, defaultMethod) {
             return handleResponse({ status: false, code: 400, message: "Request event is required." }, e, null);
         }
 
-        var rawParams = (e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+        var rawParams = (e.parameter && typeof e.parameter === "object")
+            ? Object.assign({}, e.parameter)
+            : {};
 
         var rawPayload = {};
         if (defaultMethod === "POST") {
@@ -567,11 +849,26 @@ function dispatchHttpRequest(e, defaultMethod) {
                         jsonErr.statusCode = 400;
                         throw jsonErr;
                     }
+                } else if (trimmedBody !== "") {
+                    var parsedForm = {};
+                    trimmedBody.split("&").forEach(function (pair) {
+                        if (!pair) return;
+                        var eqIdx = pair.indexOf("=");
+                        var rawK = eqIdx !== -1 ? pair.slice(0, eqIdx) : pair;
+                        var rawV = eqIdx !== -1 ? pair.slice(eqIdx + 1) : "";
+                        var key = decodeURIComponent(rawK.replace(/\+/g, " "));
+                        var val = decodeURIComponent(rawV.replace(/\+/g, " "));
+                        parsedForm[key] = val;
+                        if (rawParams[key] === undefined) {
+                            rawParams[key] = val;
+                        }
+                    });
+                    rawPayload = Object.assign({}, rawParams, parsedForm);
                 } else {
-                    rawPayload = rawParams;
+                    rawPayload = Object.assign({}, rawParams);
                 }
             } else {
-                rawPayload = rawParams;
+                rawPayload = Object.assign({}, rawParams);
             }
         }
 
@@ -599,13 +896,33 @@ function dispatchHttpRequest(e, defaultMethod) {
 
         context = {
             event: e,
+            headers: (e.headers && typeof e.headers === "object") ? e.headers : {},
             route: routeName,
             routeParams: {},
             method: rawMethod,
             action: action,
             params: params,
             payload: payload,
-            auth: null
+            auth: null,
+            wantsJson: function () {
+                var formatHint = String(this.params.format || this.payload.format || "").trim().toLowerCase();
+                if (formatHint === "json") return true;
+                if (formatHint === "html") return false;
+
+                if (this.isApi === true) return true;
+                if (this.isWeb === true) return false;
+
+                var accept = String(this.headers.accept || this.headers.Accept || "").toLowerCase();
+                if (accept.indexOf("application/json") !== -1 && accept.indexOf("text/html") === -1) {
+                    return true;
+                }
+
+                var appMode = (typeof CONFIG !== "undefined" && typeof CONFIG.getOptional === "function")
+                    ? String(CONFIG.getOptional("APP_MODE", "web") || "web").trim().toLowerCase()
+                    : "web";
+
+                return appMode !== "web";
+            }
         };
 
         var resolution = Route.resolve(routeName, rawMethod, action);
@@ -620,9 +937,9 @@ function dispatchHttpRequest(e, defaultMethod) {
 
         var matchedRoute = resolution.route;
         var routeOpts = matchedRoute.options || {};
-        if (routeOpts.web === true || routeOpts.mode === "web") {
+        if (routeOpts._isWeb === true || routeOpts.web === true || routeOpts.mode === "web") {
             context.isWeb = true;
-        } else if (routeOpts._isResource === true || routeOpts.api === true || routeOpts.mode === "api") {
+        } else if (routeOpts._isResource === true || routeOpts._isApi === true || routeOpts.api === true || routeOpts.mode === "api") {
             context.isApi = true;
         }
 

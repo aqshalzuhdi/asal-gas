@@ -12,6 +12,7 @@ const REQUIRED_CORE = [
     "config/config.js",
     "core/database.js",
     "core/foglobal.js",
+    "core/Core_View.js",
     "core/hash.js",
     "core/crud.js",
     "core/Core_Router.js",
@@ -38,9 +39,7 @@ const OVERRIDABLE_ENV_KEYS = [
     "APP_ENV",
     "APP_DEBUG",
     "SHEET_ID",
-    "BASE_URL",
-    "JWT_SECRET",
-    "API_KEY"
+    "BASE_URL"
 ];
 
 function getJsFilesRecursive(dir) {
@@ -88,6 +87,30 @@ function hydrateLocalEnvToProperties() {
     }
 }
 
+function registerViewsFromDisk() {
+    const viewsRoot = path.join(SRC_DIR, "resources", "views");
+    if (!fs.existsSync(viewsRoot) || typeof global.View === "undefined") {
+        return;
+    }
+
+    function walkViews(currentDir) {
+        const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+        for (const entry of entries) {
+            const fullPath = path.join(currentDir, entry.name);
+            if (entry.isDirectory()) {
+                walkViews(fullPath);
+            } else if (entry.isFile() && /\.gas\.js$/i.test(entry.name)) {
+                const relPath = path.relative(viewsRoot, fullPath).replace(/\\/g, "/");
+                const viewName = relPath.replace(/\.gas\.js$/i, "").replace(/\//g, ".");
+                const rawHtml = fs.readFileSync(fullPath, "utf8");
+                global.View.register(viewName, rawHtml);
+            }
+        }
+    }
+
+    walkViews(viewsRoot);
+}
+
 function bootGasRuntime() {
     installGasGlobals();
     hydrateLocalEnvToProperties();
@@ -120,6 +143,7 @@ function bootGasRuntime() {
     }
 
     loadFile(path.join(SRC_DIR, "main.js"));
+    registerViewsFromDisk();
 }
 
 module.exports = { bootGasRuntime };

@@ -1,27 +1,29 @@
 # Asal-GAS
 
-**Laravel-inspired Headless MVC & REST API framework for Google Apps Script.**
+**Laravel-inspired Hybrid Web & REST API MVC framework for Google Apps Script.**
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)
 ![Runtime](https://img.shields.io/badge/runtime-Google%20Apps%20Script%20V8-green.svg)
 ![Node.js](https://img.shields.io/badge/local%20emulator-Node.js%2018%2B-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)
 
-[Quick Start](#quick-start-local-development) · [60-Second Workflow](#60-second-workflow) · [GAS Deployment](#deployment-to-google-apps-script) · [CLI Reference](#cli-reference-gas) · [API Convention](#api-request--payload-convention)
+[Quick Start](#quick-start-local-development) · [Web & API Modes](#hybrid-web--api-routing-modes) · [Blade-Lite Views](#blade-lite-view-engine) · [60-Second Workflow](#60-second-workflow) · [GAS Deployment](#deployment-to-google-apps-script) · [CLI Reference](#cli-reference-gas) · [API Convention](#api-request--payload-convention)
 
 ---
 
 ## Overview
 
-**Asal-GAS** brings structured backend architecture to **Google Apps Script (GAS)** using Google Sheets as a relational-style datastore. Instead of maintaining monolithic `Code.gs` files, you get a local zero-quota Node.js emulator, schema migrations, database seeders, a unified `gas` CLI, and a hardened **Zero-HTTP-Bootstrap** security model.
+**Asal-GAS** brings structured full-stack and API backend architecture to **Google Apps Script (GAS)** using Google Sheets as a relational-style datastore. Instead of maintaining monolithic `Code.gs` files, you get a local zero-quota Node.js emulator, a Blade-lite HTML templating engine, dual Web & API routing layers, schema migrations, database seeders, a unified `gas` CLI, and a hardened **Zero-HTTP-Bootstrap** security model.
 
 ### Key Features
 
-- **Zero-Quota Local Emulator:** Build, migrate, seed, and test endpoints locally against `local/storage/db.json` without hitting Google Apps Script execution quotas.
-- **Unified `gas` CLI:** Generate controllers, migrations, and seeders, inspect routes (`gas route:list`), or handle `clasp` initialization, push, pull, and Web App deployments from one tool.
+- **Zero-Quota Local Emulator:** Build, migrate, seed, and test Web pages or JSON endpoints locally against `local/storage/db.json` without hitting Google Apps Script execution quotas.
+- **Hybrid Web & API Architecture:** Separate `src/routes/web.js` and `src/routes/api.js` layers controlled by `APP_MODE` (`web` or `api`) and configurable `API_PREFIX` in `.env`.
+- **Blade-Lite View Engine:** Write clean HTML templates in `src/resources/views/**/*.gas.js` with `@extends`, `@section`, `@yield`, `@include`, `@if`, `@forelse`, `{{ }}`, and `{!! !!}`—with instant local hot-reload and automatic compilation during `gas push` / `gas deploy`.
+- **Unified `gas` CLI:** Scaffold modules, controllers (`--web`, `--api`, `--hybrid`), views, migrations, and seeders, inspect routes (`gas route:list`), or manage `clasp` initialization, remote migrations, and Web App deployments from one tool.
 - **Zero-HTTP-Bootstrap Security:** Workspace provisioning (`setupWorkspace`) is completely isolated from public `doGet`/`doPost` routes, guarded by `LockService` and owner-only execution (`access: MYSELF`).
 - **V8 Load-Order Resilience:** Combines deterministic `filePushOrder` with lazy `Proxy` controller instantiation to prevent `ReferenceError` / `TypeError` caused by GAS V8 file evaluation order.
-- **Schema Migrations, Seeders & ORM:** Version-controlled table creation, column alterations, batch rollbacks, soft deletes (`deleted_at`) with `restore()` and `forceDelete()`, `bulkCreate()`, `find()`, multi-level indexing cache, and idempotent seeders.
+- **Schema Migrations, Seeders & ORM:** Version-controlled table creation, column alterations, batch rollbacks, soft deletes (`deleted_at`) with `restore()` and `forceDelete()`, `bulkCreate()`, `find()`, multi-level relation hydration (`with`), indexing cache, and idempotent seeders.
 - **Validation & Lifecycle Hooks:** Built-in `Validator.make(data, rules)` helper and `BaseController` lifecycle hooks (`beforeStore`, `afterStore`, `beforeUpdate`, `afterUpdate`, `beforeDestroy`, `afterDestroy`).
 - **CORS-Safe Universal JSON Envelope:** Standardized `POST` payload (`action`, `session`, `id`, `data`) engineered to avoid HTTP `OPTIONS` preflight failures in GAS Web Apps.
 - **Built-In Auth, TTL & Rate Limiting:** Salted PBKDF2 password hashing (`Hash.make`, `Hash.check`, `Hash.needsRehash`), session expiration (`session_expires_at`), `throttle` middleware, and automatic password field redaction.
@@ -33,12 +35,15 @@
 ```text
 ├── gas                         # Unified CLI executable (Unix/macOS/Git Bash)
 ├── gas.cmd                     # Unified CLI wrapper (Windows CMD/PowerShell)
+├── .env.example                # Environment template (APP_MODE, API_PREFIX, APP_DEBUG, etc.)
 ├── .clasp.json.example         # Template clasp config with deterministic filePushOrder
-├── .claspignore                # Files excluded from Google Apps Script push
+├── .claspignore                # Excludes raw .gas.js views & local files from GAS push
 ├── package.json                # Dependencies and npm scripts
 ├── local/
+│   ├── server.js               # Local HTTP development server
 │   ├── runtime/
-│   │   ├── GasLoader.js        # Loads src/ modules into local Node.js runtime
+│   │   ├── EnvLoader.js        # Loads local .env configuration into runtime
+│   │   ├── GasLoader.js        # Loads src/ modules & views into local Node.js runtime
 │   │   └── GasMocks.js         # Emulates SpreadsheetApp, PropertiesService, Utilities, etc.
 │   └── storage/
 │       └── .gitkeep            # Local JSON database directory (db.json is gitignored)
@@ -46,12 +51,13 @@
     ├── appsscript.json         # GAS V8 manifest (executionApi: MYSELF, Web App settings)
     ├── main.js                 # Clean HTTP entry points (doGet & doPost)
     ├── app/
-    │   └── Controllers/        # Resource (Proxy) & Plain controllers
+    │   └── Controllers/        # Web, API Resource (Proxy), and Hybrid controllers
     ├── config/
     │   └── config.js           # Lazy ScriptProperties getter & WorkspaceSetup provisioner
     ├── core/
     │   ├── Controller_Base.js  # Base CRUD controller with hooks, soft delete & relations
-    │   ├── Core_Router.js      # Route registration, middleware & dispatching engine
+    │   ├── Core_Router.js      # Dual Web/API route registration, middleware & dispatching
+    │   ├── Core_View.js        # Blade-lite template compiler & layout rendering engine
     │   ├── Database_Migration.js
     │   ├── Database_Seeder.js
     │   ├── crud.js             # Spreadsheet query, index cache, lock & mutation engine
@@ -63,8 +69,14 @@
     │   └── seeders/            # Database seeder definitions
     ├── middleware/
     │   └── middleware.js       # Session authentication & expiration guards
+    ├── resources/
+    │   └── views/              # Blade-lite HTML templates (*.gas.js)
+    │       ├── layouts/
+    │       │   └── app.gas.js
+    │       └── home.gas.js
     ├── routes/
-    │   └── api.js              # API route definitions
+    │   ├── web.js              # Web routes (registerWebRoutes)
+    │   └── api.js              # API routes (registerRoutes, auto-prefixed by API_PREFIX)
     └── tools/
         ├── CodeGenerator.js    # GAS Web Editor module/migration/controller generator
         └── DevTools.js         # Owner-only diagnostic & auth verification helpers
@@ -84,25 +96,108 @@
 
 1. **Clone the repository and install dependencies:**
    ```bash
-   git clone https://github.com/aqshalzuhdi/asal-gas.git
+   git clone [https://github.com/aqshalzuhdi/asal-gas.git](https://github.com/aqshalzuhdi/asal-gas.git)
    cd asal-gas
    npm install
    ```
 
-2. **Initialize the local database and run seeders:**
+2. **Copy `.env.example` to `.env` and configure your runtime mode:**
+   ```bash
+   cp .env.example .env
+   ```
+   ```env
+   APP_NAME="Asal-GAS"
+   APP_MODE=web
+   API_PREFIX=api
+   APP_DEBUG=true
+   ```
+
+3. **Initialize the local database and run seeders:**
    ```bash
    gas migrate:fresh --seed
    ```
 
-3. **Start the local development server:**
+4. **Start the local development server:**
    ```bash
    npm run dev
    ```
 
-4. **Verify the health-check endpoint:**
+5. **Open in browser or verify via curl:**
    ```bash
    curl "http://localhost:3000"
+   curl "http://localhost:3000/api"
    ```
+
+---
+
+## Hybrid Web & API Routing Modes
+
+Asal-GAS splits routing into two clean files:
+- **`src/routes/web.js`** (`registerWebRoutes()`) — serves HTML views and browser forms without an API prefix.
+- **`src/routes/api.js`** (`registerRoutes()`) — automatically prefixed with `API_PREFIX` from `.env` (defaults to `api`).
+
+Behavior switches automatically based on `APP_MODE` in `.env` (synced to GAS Script Properties on push/deploy):
+
+| `APP_MODE` | `src/routes/web.js` | `src/routes/api.js` (e.g., `API_PREFIX=api`) |
+| :--- | :--- | :--- |
+| **`web`** | All web routes (`/`, `/index`, `/users/create`, etc.) are active. | All API routes (`/api`, `/api/login`, `/api/users`, etc.) are active. |
+| **`api`** | Only `/` and `/index` remain active as a landing/status page; all other web routes return `404`. | All API routes remain active under `/${API_PREFIX}`. |
+
+*(To disable the API prefix completely, set `API_PREFIX=none` in `.env`.)*
+
+---
+
+## Blade-Lite View Engine
+
+Views live in `src/resources/views/` using the `.gas.js` extension and contain pure HTML + Blade-lite directives without manual `View.register()` calls. Dot notation maps directly to directory paths (`view("users.create")` resolves `src/resources/views/users/create.gas.js`).
+
+### Layout Example (`src/resources/views/layouts/app.gas.js`)
+```html
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>@yield('title', appName)</title>
+    @stack('styles')
+</head>
+<body>
+    <nav>
+        <a href="{{ url('/') }}">Home</a>
+    </nav>
+    <main>
+        @yield('content')
+    </main>
+    @stack('scripts')
+</body>
+</html>
+```
+
+### Page Example (`src/resources/views/home.gas.js`)
+```html
+@extends('layouts.app')
+
+@section('title', 'Home - ' + appName)
+
+@section('content')
+    <h1>Welcome, {{ user.name }}</h1>
+    <p>API Endpoint: <code>{{ apiUrl('/users') }}</code></p>
+
+    <ul>
+        @forelse (items as item)
+            <li>{{ loop.iteration }}. {{ item.name }}</li>
+        @empty
+            <li>No records found.</li>
+        @endforelse
+    </ul>
+@endsection
+```
+
+### Supported Directives & Helpers
+- **Layouts & Partials:** `@extends('layouts.app')`, `@section('name') ... @endsection`, `@yield('name', 'default')`, `@include('partials.alert')`, `@includeIf(...)`, `@push('scripts') ... @endpush`, `@stack('scripts')`
+- **Control Flow & Loops:** `@if`, `@elseif`, `@else`, `@endif`, `@unless`, `@isset`, `@empty`, `@foreach (items as key => item)`, `@forelse (items as item) ... @empty ... @endforelse`, `@for` (with `loop.index`, `loop.iteration`, `loop.first`, `loop.last`, `loop.count`)
+- **Output & Routing:** `{{ escaped }}`, `{!! rawHtml !!}`, `{{-- comment --}}`, `url('/path')`, `apiUrl('/users')`, `route('users.edit', { id: 1 })`, `json(data)`
+- **GAS Compilation:** During development (`APP_DEBUG=true`), `.gas.js` views hot-reload on refresh. When running `gas push` or `gas deploy`, `compileViews()` automatically bundles all templates into `src/core/Core_Views_Compiled.js`.
 
 ---
 
@@ -150,9 +245,9 @@ gas init "My GAS Backend"
 
 ### 2. Deploy as Web App
 ```bash
-gas deploy "v1.0.0"
+gas deploy "v2.0.0"
 ```
-This pushes `src/` to Google Apps Script, publishes a versioned Web App deployment, and outputs your production URL (`https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec`).
+This compiles views, pushes `src/` to Google Apps Script, publishes a versioned Web App deployment, and outputs your production URL (`https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec`).
 
 ### 3. One-Time Workspace Provisioning (Owner-Only)
 Because public HTTP routes are locked against unauthenticated bootstrapping:
@@ -166,6 +261,8 @@ Because public HTTP routes are locked against unauthenticated bootstrapping:
    - `setupWorkspace()` creates a dedicated Google Spreadsheet, stores `SHEET_ID` in **Script Properties**, executes all pending migrations, and runs initial seeders.
 4. *(Optional)* Copy the `Web App URL` from your terminal and save it as `BASE_URL` in **Project Settings → Script Properties**.
 
+*(Alternatively, configure desktop OAuth credentials once via `gas creds` to run remote migrations and seeders directly from your terminal using `gas deploy --migrate --seed` or `gas migrate:remote --seed`.)*
+
 **Execution Log Output (`setupWorkspace`):**
 
 ![setupWorkspace Execution Output](docs/img/output-setupWorkspace.png)
@@ -177,7 +274,7 @@ Because public HTTP routes are locked against unauthenticated bootstrapping:
 ### 4. Subsequent Updates
 For future releases, run:
 ```bash
-gas deploy "v1.0.1"
+gas deploy "v2.0.1"
 ```
 `gas deploy` automatically reuses your saved `deploymentId` so your production `/exec` URL remains constant.
 
@@ -193,27 +290,30 @@ gas deploy "v1.0.1"
 | :--- | :--- |
 | `gas init [Title] [--id <ScriptId>] [-f]` | Create a new standalone GAS project or link an existing `scriptId` in `.clasp.json`. |
 | `gas login` | Authenticate your Google account via `clasp`. |
-| `gas push [-f] [--seed] [--setup]` | Push `src/` to GAS and sync via private OAuth (`MYSELF`) if configured. |
+| `gas creds [-f\|--force]` | Setup `creds.json` & authenticate `clasp` for remote CLI execution (`clasp run`). |
+| `gas push [-f] [--seed] [--setup]` | Compile views, push `src/` to GAS, and sync via private OAuth (`MYSELF`) if configured. |
 | `gas pull` | Pull remote files from Google Apps Script into `src/`. |
 | `gas status` | Check file sync status between local `src/` and remote GAS. |
 | `gas open` | Open the active project in the Google Apps Script Web Editor. |
-| `gas deploy [Description] [--setup]` | Push latest code and create or update the production Web App deployment. |
-| `gas framework:update [--dry-run] [--remote <name>]` | Pull updates for core framework and CLI files (`gas`, `src/core`, `src/middleware`, `src/config/config.js`) without overwriting project files. |
+| `gas deploy [Description] [--migrate] [--seed] [--setup]` | Compile views, push latest code, and create or update the production Web App deployment. |
+| `gas framework:update [--dry-run] [--remote <name>]` | Pull updates for core framework, local runtime, and CLI files (`gas`, `src/core`, `src/middleware`, `src/config/config.js`, `local/runtime`) without overwriting project files. |
 
-### Code Generators
+### Code Generators & Views
 
 | Command | Description |
 | :--- | :--- |
-| `gas make:module <Entity> [-r\|--plain]` | Generate a Migration, Seeder, and Controller in one command. |
+| `gas make:module <Entity> [--api\|--hybrid\|--web]` | Generate a Migration, Seeder, and Controller in one command (defaults to `--api`). |
 | `gas make:migration <Name>` | Create a timestamped migration in `src/database/migrations/`. |
-| `gas make:controller <Name> [-r\|--plain]` | Create a lazy-Proxy resource controller (`-r`, default) or plain controller (`--plain`). |
+| `gas make:controller <Name> [--web\|--api\|--hybrid]` | Create a Web (`--web`, default), API Resource (`--api`), or Hybrid (`--hybrid`) controller. |
 | `gas make:seeder <Name>` | Create a seeder file in `src/database/seeders/`. |
+| `gas make:view <Name>` | Create a Blade-lite `.gas.js` template in `src/resources/views/`. |
+| `gas view:compile` | Compile all `src/resources/views/**/*.gas.js` templates into `src/core/Core_Views_Compiled.js`. |
 
-### Local Database, Routing & Diagnostics
+### Local & Remote Database, Routing & Diagnostics
 
 | Command | Description |
 | :--- | :--- |
-| `gas route:list [Filter] [--method <HTTP>]` | Display all registered routes, HTTP methods, actions, middlewares, and sheets. |
+| `gas route:list [Filter] [--method <HTTP>]` | Display all registered Web & API routes, HTTP methods, actions, middlewares, and sheets. |
 | `gas migrate [--seed] [--no-count]` | Run all pending migrations against `local/storage/db.json` (and optionally seed). |
 | `gas migrate:fresh [--seed] [--no-count]` | Reset `local/storage/db.json`, re-run all migrations, and optionally seed. |
 | `gas migrate:rollback` | Roll back the last local migration batch. |
@@ -229,7 +329,7 @@ gas deploy "v1.0.1"
 
 ### Updating Framework in an Existing Project
 
-To pull framework and CLI improvements from `asal-gas` into an existing project without overwriting custom routes (`src/routes/api.js`), controllers, migrations, seeders, or local credentials:
+To pull framework, local runtime, and CLI improvements from `asal-gas` into an existing project without overwriting custom routes (`src/routes/web.js`, `src/routes/api.js`), views (`src/resources/views`), controllers, migrations, seeders, or local credentials:
 
 ```bash
 gas framework:update --dry-run
@@ -240,14 +340,14 @@ gas framework:update
 
 ## API Request & Payload Convention
 
-Google Apps Script Web Apps dispatch routes via the `route` query parameter (`?route=<path>`). When `?route` is omitted, requests automatically resolve to the root route (`""` or `"/"`). Because GAS does not support HTTP `OPTIONS` preflight requests, all mutations use a standardized JSON envelope over `POST`.
+Google Apps Script Web Apps dispatch routes via the `route` query parameter (`?route=<path>`), while the local Node.js server supports both clean paths (`/api/users`) and `?route=api/users`. All routes in `src/routes/api.js` are automatically prefixed with `API_PREFIX` (default: `api`). Because GAS does not support HTTP `OPTIONS` preflight requests, all mutations use a standardized JSON envelope over `POST`.
 
-### 1. Health Check (`GET`)
+### 1. API Health Check (`GET`)
 ```http
-GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec
+GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<DEPLOYMENT_ID>/exec?route=api
 ```
 
-### 2. Authentication (`POST ?route=auth/login`)
+### 2. Authentication (`POST ?route=api/login`)
 ```json
 {
     "username": "admin",
@@ -255,12 +355,12 @@ GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec
 }
 ```
 
-### 3. Query & Pagination (`GET ?route=<resource>`)
+### 3. Query & Pagination (`GET ?route=api/<resource>`)
 ```http
-GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?route=users&session={{session}}&page=1&per_page=15&sort=-id
+GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<DEPLOYMENT_ID>/exec?route=api/users&session={{session}}&page=1&per_page=15&sort=-id
 ```
 
-### 4. Universal Mutation Envelope (`POST ?route=<resource>`)
+### 4. Universal Mutation Envelope (`POST ?route=api/<resource>`)
 
 **Create Record (`action: "create"`):**
 ```json
@@ -321,7 +421,7 @@ GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?route=users&session=
 `src/main.js` only dispatches registered application routes. Workspace provisioning (`WorkspaceSetup.init()`) cannot be triggered by anonymous HTTP requests, eliminating first-claim hijacking or unauthorized spreadsheet creation on public deployments.
 
 ### 2. GAS V8 Load-Order Safety
-In Google Apps Script's V8 runtime, top-level code executes sequentially by file order. Resource controllers wrap `BaseController.init(...)` inside an ES6 `Proxy` so initialization is deferred until the first incoming request—guaranteeing all `src/core/` dependencies are loaded first:
+In Google Apps Script's V8 runtime, top-level code executes sequentially by file order. Controllers wrap `BaseController.init(...)` inside an ES6 `Proxy` so initialization is deferred until the first incoming request—guaranteeing all `src/core/` dependencies are loaded first:
 
 ```javascript
 var ProjectController = (function () {
@@ -341,8 +441,8 @@ var ProjectController = (function () {
 })();
 ```
 
-### 3. Sensitive File Isolation
-`.clasp.json`, `creds.json`, and `local/storage/*.json` are ignored via `.gitignore` so personal Script IDs, Deployment IDs, and local test records are never leaked to version control.
+### 3. Sensitive & Generated File Isolation
+`.env`, `.clasp.json`, `.clasprc.json`, `creds.json`, `local/storage/*.json`, and `src/core/Core_Views_Compiled.js` are ignored via `.gitignore` so personal credentials, local test records, and compiled view artifacts stay out of version control.
 
 ---
 

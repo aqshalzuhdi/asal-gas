@@ -3,6 +3,7 @@ const path = require("path");
 const crypto = require("crypto");
 
 const STORAGE_DIR = path.join(__dirname, "../storage");
+const SRC_DIR = path.join(__dirname, "../../src");
 const DB_FILE = path.join(STORAGE_DIR, "db.json");
 const PROPS_FILE = path.join(STORAGE_DIR, "properties.json");
 
@@ -275,6 +276,15 @@ function installGasGlobals() {
             getMimeType() { return "HTML"; },
             getContent() { return this._content; }
         })
+    };
+
+    global.__readLocalViewFile = (normalizedViewName) => {
+        const relPath = String(normalizedViewName || "").replace(/\./g, "/");
+        const fullPath = path.join(SRC_DIR, "resources", "views", relPath + ".gas.js");
+        if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+            return fs.readFileSync(fullPath, "utf8");
+        }
+        return null;
     };
 
     global.Session = {

@@ -25,6 +25,8 @@ const DEFAULT_FILE_PUSH_ORDER = [
     "src/config/config.js",
     "src/core/database.js",
     "src/core/foglobal.js",
+    "src/core/Core_View.js",
+    "src/core/Core_Views_Compiled.js",
     "src/core/hash.js",
     "src/core/crud.js",
     "src/core/Core_Router.js",
@@ -72,6 +74,26 @@ function getFlagValue(flagName) {
     const prefix = `${flagName}=`;
     const inline = rawArgs.find((a) => a.startsWith(prefix));
     return inline ? inline.slice(prefix.length) : null;
+}
+
+function resolveControllerMode(defaultMode = "--web") {
+    const aliases = {
+        "--web": "--web",
+        "--plain": "--web",
+        "--api": "--api",
+        "--resource": "--api",
+        "-r": "--api",
+        "--hybrid": "--hybrid"
+    };
+
+    for (const f of flags) {
+        const key = f.toLowerCase();
+        if (aliases[key]) {
+            return aliases[key];
+        }
+    }
+
+    return defaultMode;
 }
 
 function runClaspCommand(claspCmd) {
@@ -137,6 +159,9 @@ function initGasProject(titleInput) {
     if (fs.existsSync(CLASP_FILE)) {
         const currentCfg = JSON.parse(fs.readFileSync(CLASP_FILE, "utf8"));
         currentCfg.rootDir = "./src";
+        currentCfg.scriptExtensions = [".js", ".gs"];
+        currentCfg.htmlExtensions = [".html"];
+        currentCfg.jsonExtensions = [".json"];
         currentCfg.filePushOrder = DEFAULT_FILE_PUSH_ORDER;
         currentCfg.skipSubdirectories = false;
         writeClaspConfig(currentCfg);
@@ -727,10 +752,12 @@ async function setupRemoteCredentials(cfg, forceReauth = false) {
         }
 
         console.log("📦 Syncing manifest scopes to Google Apps Script...");
+        compileViews();
         runClaspCommand("push -f");
         syncApiExecutableDeployment(cfg);
         console.log("✅ clasp authenticated with ./creds.json.");
     } else if (manifestUpdated) {
+        compileViews();
         runClaspCommand("push -f");
         syncApiExecutableDeployment(cfg);
     }
@@ -1010,6 +1037,7 @@ function pushAndSyncGas() {
     const shouldSeed = flags.includes("--seed");
     const showSetup = flags.includes("--setup");
 
+    compileViews();
     runClaspCommand(`push${forceFlag}`);
     syncApiExecutableDeployment(cfg);
 
@@ -1053,6 +1081,7 @@ async function deployGasWebApp(description) {
     }
 
     console.log("📦 Pushing latest code to Google Apps Script...");
+    compileViews();
     runClaspCommand("push -f");
 
     const existing = resolveWebAppDeployment(cfg);
@@ -1225,37 +1254,77 @@ function createMigration(rawName) {
     writeSrcFile(`database/migrations/${filename}`, body);
 }
 
-function createController(rawName, ctrlFlags = []) {
-    const className = toPascalCase(rawName);
-    const baseEntity = className.replace(/Controller$/, "") || className;
-    const tableName = pluralizeSnake(toSnakeCase(baseEntity));
-    const isPlain = ctrlFlags.includes("-p") || ctrlFlags.includes("--plain");
+function createController(rawName, modeFlag) {
+    const className = toPascalCase(rawName).endsWith("Controller")
+        ? toPascalCase(rawName)
+        : `${toPascalCase(rawName)}Controller`;
 
-    const content = isPlain
-        ? `var ${className} = {
-    index: function (ctx) {
-        return { status: true, data: [] };
+    const baseName = className.replace(/Controller$/, "");
+    const snakeBase = toSnakeCase(baseName);
+    const sheetName = pluralizeSnake(snakeBase);
+    const viewName = snakeBase;
+    const mode = String(modeFlag || "--web").toLowerCase();
+
+    let innerBody = "";
+
+    if (mode === "--api" || mode === "--resource" || mode === "-r") {
+        innerBody = `                    sheet: "${sheetName}",
+                    with: [],
+
+                    // Lifecycle hooks: beforeStore, afterStore, beforeUpdate, afterUpdate, beforeDestroy, afterDestroy
+                    // beforeStore: function (ctx) {
+                    //     return { status: true };
+                    // },
+
+                    // Override resource methods: index, store, update, destroy, restore, forceDelete
+                    // index: function (ctx) {
+                    //     return this.superIndex(ctx);
+                    // }`;
+    } else if (mode === "--hybrid") {
+        innerBody = `                    sheet: "${sheetName}",
+                    with: [],
+
+                    index: function (ctx) {
+                        var res = this.superIndex(ctx);
+                        if (ctx.wantsJson()) return res;
+
+                        return view("${viewName}.index", {
+                            items: res.data || [],
+                            meta: res.meta || null
+                        });
+                    },
+
+                    show: function (ctx) {
+                        var id = ctx.routeParams.id || ctx.params.id;
+                        var res = read(this.sheet, { id: id }, 1, 1);
+                        var item = (res.data && res.data[0]) ? res.data[0] : null;
+
+                        if (!item) {
+                            return failResponse("${baseName} not found.", 404);
+                        }
+
+                        return this.respond(ctx, "${viewName}.show", { item: item });
+                    }`;
+    } else {
+        innerBody = `                    index: function (ctx) {
+                        return view("${viewName}", {
+                            title: "${baseName}"
+                        });
+                    }
+
+                    // Example: otomatis merender view di Web dan JSON di API
+                    // show: function (ctx) {
+                    //     return this.respond(ctx, "${viewName}.show", { id: ctx.routeParams.id });
+                    // }`;
     }
-};
-`
-        : `var ${className} = (function () {
+
+    const content = `var ${className} = (function () {
     var _instance;
     return new Proxy({}, {
         get: function (_, prop) {
             if (!_instance) {
                 _instance = BaseController.init({
-                    sheet: "${tableName}",
-                    with: [],
-
-                    // Optional lifecycle hooks (beforeStore, afterStore, beforeUpdate, afterUpdate, beforeDestroy, afterDestroy):
-                    // beforeStore: function (ctx) {
-                    //     return { status: true };
-                    // },
-                    //
-                    // Or override resource methods (index, store, update, destroy, restore, forceDelete):
-                    // store: function (ctx) {
-                    //     return this.superStore(ctx);
-                    // }
+${innerBody}
                 });
             }
             var val = _instance[prop];
@@ -1266,12 +1335,6 @@ function createController(rawName, ctrlFlags = []) {
 `;
 
     writeSrcFile(`app/Controllers/${className}.js`, content);
-
-    if (isPlain) {
-        console.log(`👉 Register in src/routes/api.js -> Route.get("${toSnakeCase(baseEntity)}", "${className}@index");`);
-    } else {
-        console.log(`👉 Register in src/routes/api.js -> Route.resource("${tableName}", "${className}");`);
-    }
 }
 
 function createSeeder(rawName) {
@@ -1295,6 +1358,61 @@ function createSeeder(rawName) {
 });
 `;
     writeSrcFile(`database/seeders/${entity}Seeder.js`, content);
+}
+
+function createView(rawName) {
+    const cleanRel = String(rawName || "")
+        .trim()
+        .replace(/^\/+|\/+$/g, "")
+        .replace(/\.gas\.js$/i, "")
+        .replace(/\./g, "/");
+
+    const viewTitle = toPascalCase(cleanRel.split("/").pop());
+    const content = `@extends('layouts.app')
+
+@section('title', '${viewTitle}')
+
+@section('content')
+    <h1>${viewTitle}</h1>
+@endsection
+`;
+    writeSrcFile(`resources/views/${cleanRel}.gas.js`, content);
+}
+
+function compileViews() {
+    const viewsRoot = path.join(SRC_DIR, "resources", "views");
+    const outFile = path.join(SRC_DIR, "core", "Core_Views_Compiled.js");
+    const lines = [
+        "// AUTO-GENERATED BY `gas push` / `gas view:compile` — DO NOT EDIT MANUALLY",
+        "(function () {"
+    ];
+    let compiledCount = 0;
+
+    if (fs.existsSync(viewsRoot)) {
+        function walk(dir) {
+            const entries = fs.readdirSync(dir, { withFileTypes: true })
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    walk(fullPath);
+                } else if (entry.isFile() && /\.gas\.js$/i.test(entry.name)) {
+                    const rel = path.relative(viewsRoot, fullPath).replace(/\\/g, "/");
+                    const viewName = rel.replace(/\.gas\.js$/i, "").replace(/\//g, ".");
+                    const html = fs.readFileSync(fullPath, "utf8");
+                    lines.push(`    View.register(${JSON.stringify(viewName)}, ${JSON.stringify(html)});`);
+                    compiledCount++;
+                }
+            }
+        }
+        walk(viewsRoot);
+    }
+
+    lines.push("})();");
+    lines.push("");
+    fs.writeFileSync(outFile, lines.join("\n"), "utf8");
+    console.log(`✅ Compiled ${compiledCount} view(s) -> src/core/Core_Views_Compiled.js`);
 }
 
 function listRoutes() {
@@ -1382,6 +1500,8 @@ function updateFrameworkFromRemote() {
 
     const protectedPaths = [
         "src/routes/api.js",
+        "src/routes/web.js",
+        "src/resources/views",
         "src/app/Controllers",
         "src/database/migrations",
         "src/database/seeders",
@@ -1395,7 +1515,8 @@ function updateFrameworkFromRemote() {
         "gas",
         "src/core",
         "src/middleware",
-        "src/config/config.js"
+        "src/config/config.js",
+        "local/runtime"
     ];
 
     const remotesRaw = execSync("git remote", { cwd: ROOT_DIR, encoding: "utf8" });
@@ -1438,7 +1559,6 @@ function updateFrameworkFromRemote() {
         execSync(`git checkout ${sourceRef} -- "${target}"`, { cwd: ROOT_DIR, stdio: "inherit" });
     }
 
-    // Pastikan file khusus project tidak ikut terbawa bila ada di dalam folder target
     for (const prot of protectedPaths) {
         if (fs.existsSync(path.join(ROOT_DIR, prot))) {
             spawnSync("git", ["checkout", "--", prot], { cwd: ROOT_DIR, stdio: "ignore" });
@@ -1493,14 +1613,15 @@ function updateFrameworkFromRemote() {
 
         case "make:module": {
             if (!arg1) {
-                console.error("Usage: gas make:module Project [-r|--plain]");
+                console.error("Usage: gas make:module Project [--api|--hybrid|--web]");
                 process.exit(1);
             }
             const entity = toPascalCase(arg1).replace(/(Controller|Seeder)$/, "");
             const tablePascal = toPascalCase(pluralizeSnake(toSnakeCase(entity)));
+            const modeFlag = resolveControllerMode("--api");
             createMigration(`Create${tablePascal}Table`);
             createSeeder(entity);
-            createController(`${entity}Controller`, flags);
+            createController(`${entity}Controller`, modeFlag);
             break;
         }
 
@@ -1512,13 +1633,15 @@ function updateFrameworkFromRemote() {
             createMigration(arg1);
             break;
 
-        case "make:controller":
+        case "make:controller": {
             if (!arg1) {
-                console.error("Usage: gas make:controller CompanyController [-r|--plain]");
+                console.error("Usage: gas make:controller HomeController [--web|--api|--hybrid]");
                 process.exit(1);
             }
-            createController(arg1, flags);
+            const modeFlag = resolveControllerMode("--web");
+            createController(arg1, modeFlag);
             break;
+        }
 
         case "make:seeder":
             if (!arg1) {
@@ -1526,6 +1649,18 @@ function updateFrameworkFromRemote() {
                 process.exit(1);
             }
             createSeeder(arg1);
+            break;
+
+        case "make:view":
+            if (!arg1) {
+                console.error("Usage: gas make:view home  (or users/create)");
+                process.exit(1);
+            }
+            createView(arg1);
+            break;
+
+        case "view:compile":
+            compileViews();
             break;
 
         case "db:reindex": {
@@ -1689,17 +1824,19 @@ Asal-GAS CLI:
   gas init [Title] [--id <ScriptId>] [-f]                  # Create a new GAS project (or link ID) & setup .clasp.json
   gas login                                                # Authenticate Google account via clasp
   gas creds [-f|--force]                                   # Setup creds.json & authenticate clasp for remote execution
-  gas push [-f|--force] [--seed] [--setup]                 # Push src/ to GAS + private OAuth sync (MYSELF)
+  gas push [-f|--force] [--seed] [--setup]                 # Compile views, push src/ to GAS & sync via private OAuth
   gas pull                                                 # Pull remote source code from GAS into src/
   gas status                                               # Check local vs remote file status
   gas open                                                 # Open project in Google Apps Script Web Editor
-  gas deploy [Description] [--migrate] [--seed] [--setup]  # Push, deploy Web App & optionally run remote migrate/seed
-  gas framework:update [--dry-run] [--remote <name>]       # Sync core & CLI files from asal-gas without touching project files
+  gas deploy [Description] [--migrate] [--seed] [--setup]  # Compile views, push, deploy Web App & optional migrate/seed
+  gas framework:update [--dry-run] [--remote <name>]       # Sync core, runtime & CLI files without touching project files
 
-  gas make:module <Entity> [-r|--plain]                    # Generate Migration + Seeder + Controller
+  gas make:module <Entity> [--api|--hybrid|--web]          # Generate Migration + Seeder + Controller
   gas make:migration <Name>                                # Create migration in src/database/migrations/
-  gas make:controller <Name> [-r|--plain]                  # Create controller in src/app/Controllers/<Name>.js
+  gas make:controller <Name> [--web|--api|--hybrid]        # Create Web, API Resource, or Hybrid controller
   gas make:seeder <Name>                                   # Create seeder in src/database/seeders/
+  gas make:view <Name>                                     # Create Blade-lite .gas.js view in src/resources/views/
+  gas view:compile                                         # Compile src/resources/views/**/*.gas.js for GAS push
 
   gas migrate [--seed] [--no-count]                        # Run pending migrations locally
   gas migrate:fresh [--seed] [--no-count]                  # Reset local db.json & re-run all migrations
@@ -1713,7 +1850,7 @@ Asal-GAS CLI:
   gas db:seed:remote [Seeder] [--no-count]                 # Run DatabaseSeeder (or specific seeder) on remote GAS
   gas db:reindex                                           # Rebuild local schema metadata and row indexes
 
-  gas route:list [Filter] [--method <HTTP>]                # List registered API routes and middlewares
+  gas route:list [Filter] [--method <HTTP>]                # List registered Web & API routes and middlewares
 `);
     }
 })();
