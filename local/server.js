@@ -1,8 +1,13 @@
+const fs = require("fs");
 const http = require("http");
 const net = require("net");
 const path = require("path");
 const { loadLocalEnv } = require("./runtime/EnvLoader");
 const { bootGasRuntime } = require("./runtime/GasLoader");
+
+const sseClients = new Set();
+const viewsWatchDir = path.join(__dirname, "..", "src", "resources", "views");
+let reloadDebounce = null;
 
 const envMap = loadLocalEnv(path.resolve(__dirname, "../.env"));
 for (const [key, val] of Object.entries(envMap)) {
@@ -15,6 +20,23 @@ bootGasRuntime();
 
 const START_PORT = Number(process.env.PORT) || 3000;
 const MAX_PORT = START_PORT + 100;
+
+function isHotReloadEnabled() {
+    if (typeof global.isDebugEnabled === "function") {
+        return global.isDebugEnabled();
+    }
+    return String(process.env.APP_DEBUG || "true").trim().toLowerCase() === "true";
+}
+
+function injectLiveReloadScript(html) {
+    if (!isHotReloadEnabled() || typeof html !== "string") return html;
+    if (html.includes("/__gas_reload")) return html;
+
+    const liveReloadScript = `<script>(function(){var es=new EventSource("/__gas_reload");es.onmessage=function(e){if(e.data==="reload")location.reload();};})();</script>`;
+    return html.includes("</body>")
+        ? html.replace("</body>", `${liveReloadScript}</body>`)
+        : `${html}${liveReloadScript}`;
+}
 
 function detectHtmlResponse(output, rawText) {
     if (output && typeof output.getMimeType === "function") {
@@ -42,6 +64,18 @@ function extractStatusCode(output, rawText, isHtml) {
     return 200;
 }
 
+if (fs.existsSync(viewsWatchDir)) {
+    fs.watch(viewsWatchDir, { recursive: true }, (eventType, filename) => {
+        if (!filename || !/\.gas\.js$/i.test(filename)) return;
+        clearTimeout(reloadDebounce);
+        reloadDebounce = setTimeout(() => {
+            for (const client of sseClients) {
+                client.write("data: reload\n\n");
+            }
+        }, 120);
+    });
+}
+
 const server = http.createServer((req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
@@ -53,6 +87,19 @@ const server = http.createServer((req, res) => {
     }
 
     const parsedUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+
+    if (parsedUrl.pathname === "/__gas_reload") {
+        res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive"
+        });
+        res.write(": connected\n\n");
+        sseClients.add(res);
+        req.on("close", () => sseClients.delete(res));
+        return;
+    }
+
     const query = Object.fromEntries(parsedUrl.searchParams.entries());
     const cleanPath = parsedUrl.pathname ? parsedUrl.pathname.replace(/^\/+|\/+$/g, "") : "";
 
@@ -92,11 +139,12 @@ const server = http.createServer((req, res) => {
             const rawText = typeof output?.getContent === "function" ? output.getContent() : JSON.stringify(output);
             const isHtml = detectHtmlResponse(output, rawText);
             const statusCode = extractStatusCode(output, rawText, isHtml);
+            const finalBody = isHtml ? injectLiveReloadScript(rawText) : rawText;
 
             res.writeHead(statusCode, {
                 "Content-Type": isHtml ? "text/html; charset=utf-8" : "application/json; charset=utf-8"
             });
-            res.end(rawText);
+            res.end(finalBody);
         } catch (err) {
             console.error("[LOCAL SERVER ERROR]", err);
 
@@ -109,11 +157,12 @@ const server = http.createServer((req, res) => {
                 const errText = typeof errOut?.getContent === "function" ? errOut.getContent() : JSON.stringify(errOut);
                 const isHtml = detectHtmlResponse(errOut, errText);
                 const statusCode = extractStatusCode(errOut, errText, isHtml) || 500;
+                const finalErrBody = isHtml ? injectLiveReloadScript(errText) : errText;
 
                 res.writeHead(statusCode, {
                     "Content-Type": isHtml ? "text/html; charset=utf-8" : "application/json; charset=utf-8"
                 });
-                return res.end(errText);
+                return res.end(finalErrBody);
             }
 
             const debug = typeof global.isDebugEnabled === "function" && global.isDebugEnabled();
