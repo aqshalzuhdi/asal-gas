@@ -5,6 +5,7 @@ const os = require("os");
 const vm = require("vm");
 const http = require("http");
 const https = require("https");
+const crypto = require("crypto");
 const readline = require("readline");
 const { execSync, spawnSync, spawn } = require("child_process");
 const { bootGasRuntime } = require("./local/runtime/GasLoader");
@@ -28,6 +29,7 @@ const DEFAULT_FILE_PUSH_ORDER = [
     "src/core/Core_View.js",
     "src/core/Core_Views_Compiled.js",
     "src/core/hash.js",
+    "src/core/Csrf.js",
     "src/core/crud.js",
     "src/core/Core_Router.js",
     "src/core/Database_Migration.js",
@@ -1031,18 +1033,147 @@ function printManualSetupReminder(webAppUrl) {
     console.log("========================================================\n");
 }
 
-function pushAndSyncGas() {
+function generateAppKey() {
+    return "base64:" + crypto.randomBytes(32).toString("base64");
+}
+
+function readEnvAppKey(envPath) {
+    if (!fs.existsSync(envPath)) return "";
+    const content = fs.readFileSync(envPath, "utf8");
+    const match = content.match(/^\s*APP_KEY\s*=\s*(.*)\s*$/m);
+    if (!match) return "";
+    return match[1].trim().replace(/^["']|["']$/g, "");
+}
+
+function upsertEnvKey(envPath, key, value) {
+    let lines = fs.existsSync(envPath)
+        ? fs.readFileSync(envPath, "utf8").split(/\r?\n/)
+        : [];
+
+    const pattern = new RegExp(`^\\s*${key}\\s*=`);
+    let replaced = false;
+    lines = lines.map((line) => {
+        if (pattern.test(line)) {
+            replaced = true;
+            return `${key}="${value}"`;
+        }
+        return line;
+    });
+
+    if (!replaced) {
+        if (lines.length && lines[lines.length - 1] !== "") {
+            lines.push("");
+        }
+        lines.push(`${key}="${value}"`);
+    }
+
+    fs.writeFileSync(envPath, lines.join("\n").replace(/\n*$/, "\n"), "utf8");
+}
+
+function buildEnvPayload(appKey) {
+    const localEnv = loadLocalEnv(path.join(ROOT_DIR, ".env"));
+    if (appKey && !localEnv.APP_KEY) {
+        return Object.assign({}, localEnv, { APP_KEY: appKey });
+    }
+    return localEnv;
+}
+
+async function ensureAppKeyOnFirstDeploy(cfg, remoteInfo = null) {
+    const envPath = path.join(ROOT_DIR, ".env");
+    const localEnv = loadLocalEnv(envPath);
+
+    const existingKey =
+        String(remoteInfo?.APP_KEY || "").trim() ||
+        String(cfg.appKey || "").trim() ||
+        String(localEnv.APP_KEY || "").trim() ||
+        readEnvAppKey(envPath);
+
+    // Sudah terdaftar: langsung lewati tanpa prompt maupun overwrite
+    if (existingKey) {
+        if (!cfg.appKey) {
+            cfg.appKey = existingKey;
+            writeClaspConfig(cfg);
+        }
+        if (!localEnv.APP_KEY && !readEnvAppKey(envPath)) {
+            upsertEnvKey(envPath, "APP_KEY", existingKey);
+        }
+        return existingKey;
+    }
+
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        return "";
+    }
+
+    console.log("\n🔐 APP_KEY is not registered yet (used for CSRF token encryption/signing).");
+    const answer = await askQuestion("Generate a new APP_KEY and assign it to Script Properties now? [Y/n]: ");
+    const normalized = answer.toLowerCase();
+
+    if (normalized === "n" || normalized === "no") {
+        console.log("⏭️  Skipped APP_KEY generation.");
+        return "";
+    }
+
+    const newKey = generateAppKey();
+    upsertEnvKey(envPath, "APP_KEY", newKey);
+    cfg.appKey = newKey;
+    writeClaspConfig(cfg);
+    console.log("✅ Generated APP_KEY, saved to .env, and queued for Script Properties.");
+    return newKey;
+}
+
+async function generateAppKeyCommand() {
+    const hasClasp = fs.existsSync(CLASP_FILE);
+    const cfg = hasClasp ? readClaspConfig() : {};
+    const isForce = flags.includes("-f") || flags.includes("--force");
+    const envPath = path.join(ROOT_DIR, ".env");
+    const existing = String(cfg.appKey || "").trim() || readEnvAppKey(envPath);
+
+    if (existing && !isForce) {
+        console.log("ℹ️  APP_KEY is already configured. Pass --force to generate and overwrite with a new key.");
+        return;
+    }
+
+    const newKey = generateAppKey();
+    upsertEnvKey(envPath, "APP_KEY", newKey);
+
+    if (hasClasp) {
+        cfg.appKey = newKey;
+        writeClaspConfig(cfg);
+    }
+
+    console.log(`✅ Generated APP_KEY: ${newKey}`);
+    console.log("📄 Saved to .env" + (hasClasp ? " and .clasp.json." : "."));
+
+    if (hasClasp) {
+        const syncRes = tryClaspRun("setupWorkspace", {
+            env: buildEnvPayload(newKey),
+            migrate: false,
+            seed: false,
+            webAppUrl: cfg.webAppUrl || ""
+        });
+        if (syncRes && !syncRes.__gasException && syncRes.status) {
+            console.log("☁️  Synced APP_KEY to GAS Script Properties.");
+        } else {
+            console.log("👉 Run 'gas push' or 'gas deploy' to sync APP_KEY to GAS Script Properties.");
+        }
+    }
+}
+
+async function pushAndSyncGas() {
     const cfg = readClaspConfig();
     const forceFlag = flags.includes("-f") || flags.includes("--force") ? " -f" : "";
     const shouldSeed = flags.includes("--seed");
     const showSetup = flags.includes("--setup");
+
+    const appKey = await ensureAppKeyOnFirstDeploy(cfg, null);
+    const envWithKey = buildEnvPayload(appKey);
 
     compileViews();
     runClaspCommand(`push${forceFlag}`);
     syncApiExecutableDeployment(cfg);
 
     const remoteRes = tryClaspRun("setupWorkspace", {
-        env: loadLocalEnv(path.join(ROOT_DIR, ".env")),
+        env: envWithKey,
         migrate: true,
         seed: shouldSeed,
         webAppUrl: cfg.webAppUrl || ""
@@ -1079,6 +1210,9 @@ async function deployGasWebApp(description) {
         const ready = await setupRemoteCredentials(cfg, false);
         if (!ready) process.exit(1);
     }
+
+    const appKey = await ensureAppKeyOnFirstDeploy(cfg, null);
+    const envWithKey = buildEnvPayload(appKey);
 
     console.log("📦 Pushing latest code to Google Apps Script...");
     compileViews();
@@ -1121,7 +1255,7 @@ async function deployGasWebApp(description) {
         "setupWorkspace",
         {
             webAppUrl,
-            env: loadLocalEnv(path.join(ROOT_DIR, ".env")),
+            env: envWithKey,
             migrate: shouldMigrate,
             seed: shouldSeed
         },
@@ -1588,9 +1722,13 @@ function updateFrameworkFromRemote() {
             break;
         }
 
+        case "key:generate":
+            await generateAppKeyCommand();
+            break;
+
         case "push":
         case "clasp:push":
-            pushAndSyncGas();
+            await pushAndSyncGas();
             break;
 
         case "pull":
@@ -1825,11 +1963,12 @@ Asal-GAS CLI:
   gas init [Title] [--id <ScriptId>] [-f]                  # Create a new GAS project (or link ID) & setup .clasp.json
   gas login                                                # Authenticate Google account via clasp
   gas creds [-f|--force]                                   # Setup creds.json & authenticate clasp for remote execution
-  gas push [-f|--force] [--seed] [--setup]                 # Compile views, push src/ to GAS & sync via private OAuth
+  gas key:generate [-f|--force]                            # Generate APP_KEY in .env/.clasp.json & sync to Script Properties
+  gas push [-f|--force] [--seed] [--setup]                 # Compile views, prompt APP_KEY (first run), push & sync GAS
   gas pull                                                 # Pull remote source code from GAS into src/
   gas status                                               # Check local vs remote file status
   gas open                                                 # Open project in Google Apps Script Web Editor
-  gas deploy [Description] [--migrate] [--seed] [--setup]  # Compile views, push, deploy Web App & optional migrate/seed
+  gas deploy [Description] [--migrate] [--seed] [--setup]  # Compile views, prompt APP_KEY (first run), push & deploy Web App
   gas framework:update [--dry-run] [--remote <name>]       # Sync core, runtime & CLI files without touching project files
 
   gas make:module <Entity> [--api|--hybrid|--web]          # Generate Migration + Seeder + Controller

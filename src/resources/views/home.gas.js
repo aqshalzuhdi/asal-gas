@@ -49,6 +49,7 @@
                         onsubmit="return confirm('Yakin ingin menghapus user ini?');"
                         style="margin:0;"
                     >
+                        @csrf
                         <input type="hidden" name="_method" value="DELETE">
                         <button
                             type="submit"

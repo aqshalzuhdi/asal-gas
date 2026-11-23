@@ -24,7 +24,9 @@ var Route = (function () {
             }
             if (typeof CONFIG.getOptional === "function") {
                 var raw = String(CONFIG.getOptional("API_PREFIX", "api") || "").trim().replace(/^\/+|\/+$/g, "");
-                return (raw.toLowerCase() === "none" || raw === "-") ? "" : raw;
+                var lower = raw.toLowerCase();
+                if (lower === "true" || lower === "1") return "api";
+                return (lower === "none" || lower === "false" || lower === "0" || raw === "-") ? "" : raw;
             }
         }
         return "api";
@@ -49,7 +51,7 @@ var Route = (function () {
         if (_booted) return;
         _booted = true;
 
-        if (typeof registerWebRoutes === "function") {
+        if (getAppMode() === "web" && typeof registerWebRoutes === "function") {
             _currentRouteLayer = "web";
             try {
                 registerWebRoutes();
@@ -170,24 +172,20 @@ var Route = (function () {
     function register(methods, routeName, handlerSpec, options) {
         var cleanRoute = applyPrefix(routeName);
         var appMode = getAppMode();
+        var opts = Object.assign({}, options || {});
 
-        if (_currentRouteLayer === "web" && appMode !== "web") {
-            if (cleanRoute !== "" && cleanRoute !== "index") {
-                return buildFluentBuilder([]);
-            }
+        if ((_currentRouteLayer === "web" || opts.web === true) && appMode !== "web") {
+            return buildFluentBuilder([]);
         }
 
         if (!_routes[cleanRoute]) {
             _routes[cleanRoute] = [];
         }
 
-        var apiPrefix = (typeof CONFIG !== "undefined" && CONFIG.API_PREFIX !== undefined)
-            ? CONFIG.API_PREFIX
-            : "api";
-
-        var opts = Object.assign({}, options || {});
+        var apiPrefix = getApiPrefix();
         if (
             _currentRouteLayer === "api" ||
+            appMode !== "web" ||
             (apiPrefix && (cleanRoute === apiPrefix || cleanRoute.indexOf(apiPrefix + "/") === 0))
         ) {
             opts._isApi = true;
@@ -200,11 +198,20 @@ var Route = (function () {
             normalizedMethods.push(String(methods[i]).toUpperCase());
         }
 
+        var hasMutatingMethod = normalizedMethods.some(function (m) {
+            return m !== "GET" && m !== "HEAD" && m !== "OPTIONS";
+        });
+
+        var routeMiddlewares = currentMiddlewares();
+        if (opts._isWeb && hasMutatingMethod && !opts.withoutCsrf && routeMiddlewares.indexOf("csrf") === -1) {
+            routeMiddlewares.unshift("csrf");
+        }
+
         var entryObj = {
             methods: normalizedMethods,
             action: opts.action || null,
             name: opts.name || null,
-            middlewares: currentMiddlewares(),
+            middlewares: routeMiddlewares,
             handlerSpec: handlerSpec,
             options: opts
         };
@@ -217,59 +224,39 @@ var Route = (function () {
         return buildFluentBuilder([{ path: cleanRoute, entry: entryObj }]);
     }
 
-    function matchDynamicRoute(normalizedRoute) {
-        if (!normalizedRoute) return null;
+    function resolveApiIndexEntries(normalizedRoute) {
+        var apiPrefix = getApiPrefix();
+        var isIndexRequest = (
+            normalizedRoute === "" ||
+            normalizedRoute === "index" ||
+            (apiPrefix !== "" && (normalizedRoute === apiPrefix || normalizedRoute === apiPrefix + "/index"))
+        );
 
-        var incomingParts = normalizedRoute.split("/");
-        var routeKeys = Object.keys(_routes);
-        var bestMatch = null;
-        var bestStaticScore = -1;
+        if (!isIndexRequest) {
+            return null;
+        }
 
-        for (var i = 0; i < routeKeys.length; i++) {
-            var pattern = routeKeys[i];
-            if (pattern.indexOf(":") === -1 && pattern.indexOf("{") === -1) {
-                continue;
+        var candidates = [];
+        if (normalizedRoute === "index" || (apiPrefix !== "" && normalizedRoute === apiPrefix + "/index")) {
+            if (apiPrefix !== "") {
+                candidates.push(apiPrefix + "/index", apiPrefix);
             }
-
-            var patternParts = pattern.split("/");
-            if (patternParts.length !== incomingParts.length) {
-                continue;
+            candidates.push("index", "");
+        } else {
+            if (apiPrefix !== "") {
+                candidates.push(apiPrefix, apiPrefix + "/index");
             }
+            candidates.push("", "index");
+        }
 
-            var extractedParams = {};
-            var isMatch = true;
-            var staticScore = 0;
-
-            for (var s = 0; s < patternParts.length; s++) {
-                var pSeg = patternParts[s];
-                var iSeg = incomingParts[s];
-
-                if (pSeg.charAt(0) === ":" && pSeg.length > 1) {
-                    extractedParams[pSeg.substring(1)] = iSeg;
-                } else if (
-                    pSeg.charAt(0) === "{" &&
-                    pSeg.charAt(pSeg.length - 1) === "}" &&
-                    pSeg.length > 2
-                ) {
-                    extractedParams[pSeg.substring(1, pSeg.length - 1)] = iSeg;
-                } else if (pSeg === iSeg) {
-                    staticScore++;
-                } else {
-                    isMatch = false;
-                    break;
-                }
-            }
-
-            if (isMatch && staticScore > bestStaticScore) {
-                bestStaticScore = staticScore;
-                bestMatch = {
-                    entries: _routes[pattern] || [],
-                    routeParams: extractedParams
-                };
+        for (var i = 0; i < candidates.length; i++) {
+            var key = candidates[i];
+            if (_routes[key] && _routes[key].length > 0) {
+                return _routes[key];
             }
         }
 
-        return bestMatch;
+        return null;
     }
 
     function resolveResourceAbilities(opts) {
@@ -412,10 +399,6 @@ var Route = (function () {
                 }, Object.assign({}, opts, { action: "create" }));
             }
 
-            if (abilities.update) {
-                // fallback check
-            }
-
             if (abilities.indexOf("update") !== -1) {
                 register(["POST"], routeName, {
                     controller: ctrl,
@@ -473,17 +456,16 @@ var Route = (function () {
 
             var normalizedRoute = normalizeRoutePath(routeName);
             var routeParams = {};
-            var entries = _routes[normalizedRoute] || (normalizedRoute === "" ? _routes["/"] : null);
+            var entries = null;
 
-            if (!entries && getAppMode() !== "web") {
-                if (normalizedRoute === "index" && _routes[""]) {
-                    entries = _routes[""];
-                } else if (normalizedRoute === "" && _routes["index"]) {
-                    entries = _routes["index"];
-                }
+            if (getAppMode() !== "web") {
+                entries = resolveApiIndexEntries(normalizedRoute);
             }
 
-            // Pencocokan rute berparameter seperti users/:id/edit dan users/:id
+            if (!entries) {
+                entries = _routes[normalizedRoute] || (normalizedRoute === "" ? _routes["/"] : null);
+            }
+
             if (!entries && normalizedRoute !== "") {
                 var actualSegs = normalizedRoute.split("/");
                 var patternKeys = Object.keys(_routes);
@@ -724,6 +706,7 @@ function apiUrl(rawPath, queryParams) {
 
     return url(prefixed, queryParams);
 }
+
 function route(routeName, params) {
     var pattern = Route.resolveName(routeName);
     if (!pattern) {
@@ -814,6 +797,60 @@ var Middlewares = {
         } catch (e) {
             return { passed: true };
         }
+    },
+
+    csrf: function (ctx) {
+        var method = String((ctx && ctx.method) || "GET").toUpperCase();
+        if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+            return { passed: true };
+        }
+
+        var params = (ctx && ctx.params) || {};
+        var payload = (ctx && ctx.payload) || {};
+        var headers = (ctx && ctx.headers) || {};
+
+        var submittedToken =
+            payload._token ||
+            payload.csrf_token ||
+            params._token ||
+            params.csrf_token ||
+            headers["x-csrf-token"] ||
+            headers["X-CSRF-TOKEN"] ||
+            headers["x-xsrf-token"] ||
+            headers["X-XSRF-TOKEN"] ||
+            "";
+
+        if (typeof Csrf === "undefined") {
+            return {
+                passed: false,
+                response: {
+                    status: false,
+                    code: 500,
+                    message: "Csrf module is not loaded."
+                }
+            };
+        }
+
+        var check = typeof Csrf.verifyDetailed === "function"
+            ? Csrf.verifyDetailed(String(submittedToken))
+            : { valid: Csrf.verify(String(submittedToken)), reason: "verification_failed" };
+
+        if (!check.valid) {
+            var debugMsg = (typeof isDebugEnabled === "function" && isDebugEnabled())
+                ? "CSRF token mismatch or expired (" + check.reason + ")."
+                : "CSRF token mismatch or expired.";
+
+            return {
+                passed: false,
+                response: {
+                    status: false,
+                    code: 419,
+                    message: debugMsg
+                }
+            };
+        }
+
+        return { passed: true };
     }
 };
 
@@ -905,6 +942,14 @@ function dispatchHttpRequest(e, defaultMethod) {
             payload: payload,
             auth: null,
             wantsJson: function () {
+                var appMode = (typeof CONFIG !== "undefined" && typeof CONFIG.getOptional === "function")
+                    ? String(CONFIG.getOptional("APP_MODE", "web") || "web").trim().toLowerCase()
+                    : "web";
+
+                if (appMode !== "web") {
+                    return true;
+                }
+
                 var formatHint = String(this.params.format || this.payload.format || "").trim().toLowerCase();
                 if (formatHint === "json") return true;
                 if (formatHint === "html") return false;
@@ -917,11 +962,7 @@ function dispatchHttpRequest(e, defaultMethod) {
                     return true;
                 }
 
-                var appMode = (typeof CONFIG !== "undefined" && typeof CONFIG.getOptional === "function")
-                    ? String(CONFIG.getOptional("APP_MODE", "web") || "web").trim().toLowerCase()
-                    : "web";
-
-                return appMode !== "web";
+                return false;
             }
         };
 

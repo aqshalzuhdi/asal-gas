@@ -21,6 +21,7 @@
     @endif
 
     <form method="POST" action="{{ url('/users') }}" style="display:flex; flex-direction:column; gap:14px;">
+        @csrf
         <div>
             <label for="name" style="display:block; font-weight:600; margin-bottom:6px;">Nama</label>
             <input
