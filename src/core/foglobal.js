@@ -442,12 +442,223 @@ function isWebRequest(e, context) {
     return true;
 }
 
+function _buildGasClientRuntimeScript() {
+    return '<script data-asal-gas-runtime="1">' +
+        '(function(){' +
+        'if(window.__ASAL_GAS_RUNTIME__)return;' +
+        'window.__ASAL_GAS_RUNTIME__=true;' +
+        'var hasGas=typeof window.google!=="undefined"&&window.google.script&&window.google.script.run;' +
+        'var progressTimer=null;' +
+
+        'function getProgressBar(){' +
+            'var el=document.getElementById("__asal_gas_progress");' +
+            'if(!el){' +
+                'el=document.createElement("div");' +
+                'el.id="__asal_gas_progress";' +
+                'el.style.cssText="position:fixed;top:0;left:0;height:3px;width:0%;background:linear-gradient(90deg,#2563eb,#38bdf8);z-index:2147483647;transition:width .25s ease,opacity .2s ease;opacity:0;pointer-events:none;";' +
+                'document.documentElement.appendChild(el);' +
+            '}' +
+            'return el;' +
+        '}' +
+
+        'function startLoading(){' +
+            'if(document.body){' +
+                'document.body.style.transition="opacity .15s ease";' +
+                'document.body.style.opacity="0.65";' +
+                'document.body.style.pointerEvents="none";' +
+            '}' +
+            'var bar=getProgressBar();' +
+            'clearInterval(progressTimer);' +
+            'bar.style.opacity="1";' +
+            'bar.style.width="25%";' +
+            'var cur=25;' +
+            'progressTimer=setInterval(function(){' +
+                'cur=Math.min(90,cur+(90-cur)*0.2);' +
+                'bar.style.width=cur.toFixed(1)+"%";' +
+            '},180);' +
+        '}' +
+
+        'function stopLoading(){' +
+            'clearInterval(progressTimer);' +
+            'if(document.body){' +
+                'document.body.style.opacity="";' +
+                'document.body.style.pointerEvents="";' +
+            '}' +
+            'var bar=getProgressBar();' +
+            'bar.style.width="100%";' +
+            'setTimeout(function(){' +
+                'bar.style.opacity="0";' +
+                'setTimeout(function(){bar.style.width="0%";},200);' +
+            '},120);' +
+        '}' +
+
+        'function markSafeTargets(){' +
+            'var links=document.querySelectorAll("a[href]");' +
+            'for(var i=0;i<links.length;i++){' +
+                'if(!links[i].getAttribute("target"))links[i].setAttribute("target","_top");' +
+            '}' +
+        '}' +
+
+        'function parseTargetUrl(rawHref){' +
+            'if(!rawHref)return null;' +
+            'var trimmed=String(rawHref).trim();' +
+            'if(!trimmed||trimmed.charAt(0)==="#"||/^(javascript|mailto|tel):/i.test(trimmed))return null;' +
+            'var parsed;' +
+            'try{parsed=new URL(trimmed,window.location.href);}catch(_){return null;}' +
+            'var query={};' +
+            'parsed.searchParams.forEach(function(v,k){query[k]=v;});' +
+            'var routePath="";' +
+            'if(Object.prototype.hasOwnProperty.call(query,"route")){' +
+                'routePath=String(query.route||"").replace(/^\\/+|\\/+$/g,"");' +
+                'delete query.route;' +
+            '}else{' +
+                'var cleanPath=parsed.pathname.replace(/^\\/+|\\/+$/g,"");' +
+                'if(!/\\/(exec|dev)$/i.test(cleanPath))routePath=cleanPath;' +
+            '}' +
+            'if(routePath==="api"||routePath.indexOf("api/")===0)return null;' +
+            'return{route:routePath,query:query};' +
+        '}' +
+
+        'function syncHeadAssets(nextHead){' +
+            'if(!nextHead||!document.head)return;' +
+            'var oldManaged=document.head.querySelectorAll("[data-asal-gas-head]");' +
+            'for(var i=0;i<oldManaged.length;i++)oldManaged[i].remove();' +
+            'var nextNodes=nextHead.querySelectorAll("style,link[rel=\'stylesheet\']");' +
+            'for(var j=0;j<nextNodes.length;j++){' +
+                'var clone=nextNodes[j].cloneNode(true);' +
+                'clone.setAttribute("data-asal-gas-head","1");' +
+                'document.head.appendChild(clone);' +
+            '}' +
+        '}' +
+
+        'function swapDocument(htmlStr,routePath,queryObj,pushHistory){' +
+            'var parser=new DOMParser();' +
+            'var nextDoc=parser.parseFromString(String(htmlStr||""),"text/html");' +
+            'if(nextDoc.title)document.title=nextDoc.title;' +
+            'syncHeadAssets(nextDoc.head);' +
+            'if(nextDoc.body){' +
+                'document.body.className=nextDoc.body.className;' +
+                'document.body.style.cssText=nextDoc.body.style.cssText;' +
+                'document.body.innerHTML=nextDoc.body.innerHTML;' +
+                'var scripts=document.body.querySelectorAll("script");' +
+                'for(var i=0;i<scripts.length;i++){' +
+                    'if(scripts[i].hasAttribute("data-asal-gas-runtime")){scripts[i].remove();continue;}' +
+                    'var s=document.createElement("script");' +
+                    'for(var a=0;a<scripts[i].attributes.length;a++){' +
+                        'var attr=scripts[i].attributes[a];' +
+                        's.setAttribute(attr.name,attr.value);' +
+                    '}' +
+                    's.textContent=scripts[i].textContent;' +
+                    'scripts[i].parentNode.replaceChild(s,scripts[i]);' +
+                '}' +
+            '}' +
+            'markSafeTargets();' +
+            'window.scrollTo(0,0);' +
+            'if(pushHistory&&hasGas&&window.google.script.history){' +
+                'try{' +
+                    'var hParams=Object.assign({},queryObj||{});' +
+                    'if(routePath)hParams.route=routePath;' +
+                    'window.google.script.history.push({route:routePath,query:queryObj||{}},hParams,"");' +
+                '}catch(_){}' +
+            '}' +
+        '}' +
+
+        'function navigateViaGas(method,routePath,queryObj,payloadObj,pushHistory){' +
+            'startLoading();' +
+            'window.google.script.run' +
+                '.withSuccessHandler(function(res){' +
+                    'stopLoading();' +
+                    'if(!res)return;' +
+                    'if(res.isHtml){' +
+                        'swapDocument(res.html,res.route!==undefined?res.route:routePath,res.query||queryObj,pushHistory);' +
+                    '}else{' +
+                        'swapDocument("<pre style=\'white-space:pre-wrap;word-break:break-word;padding:16px;\'>"+String(res.html||"").replace(/</g,"&lt;")+"</pre>",routePath,queryObj,pushHistory);' +
+                    '}' +
+                '})' +
+                '.withFailureHandler(function(err){' +
+                    'stopLoading();' +
+                    'alert("Gagal memuat halaman: "+(err&&err.message?err.message:String(err)));' +
+                '})' +
+                '.gasNavigate({method:method,route:routePath,query:queryObj||{},payload:payloadObj||{}});' +
+        '}' +
+
+        'markSafeTargets();' +
+        'if(!hasGas)return;' +
+
+        'document.addEventListener("click",function(e){' +
+            'if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;' +
+            'var link=e.target.closest("a[href]");' +
+            'if(!link||link.hasAttribute("download"))return;' +
+            'var t=(link.getAttribute("target")||"").toLowerCase();' +
+            'if(t==="_blank")return;' +
+            'var target=parseTargetUrl(link.getAttribute("href"));' +
+            'if(!target)return;' +
+            'e.preventDefault();' +
+            'navigateViaGas("GET",target.route,target.query,null,true);' +
+        '});' +
+
+        'document.addEventListener("submit",function(e){' +
+            'if(e.defaultPrevented)return;' +
+            'var form=e.target;' +
+            'if(!form||form.tagName!=="FORM")return;' +
+            'var target=parseTargetUrl(form.getAttribute("action")||window.location.href);' +
+            'if(!target)return;' +
+            'e.preventDefault();' +
+            'var payload={};' +
+            'var fd=new FormData(form);' +
+            'fd.forEach(function(val,key){' +
+                'if(Object.prototype.hasOwnProperty.call(payload,key)){' +
+                    'if(!Array.isArray(payload[key]))payload[key]=[payload[key]];' +
+                    'payload[key].push(val);' +
+                '}else{payload[key]=val;}' +
+            '});' +
+            'if(e.submitter&&e.submitter.name)payload[e.submitter.name]=e.submitter.value;' +
+            'var btns=form.querySelectorAll("button[type=\'submit\'],input[type=\'submit\']");' +
+            'for(var i=0;i<btns.length;i++)btns[i].disabled=true;' +
+            'var method=String(form.getAttribute("method")||"POST").toUpperCase();' +
+            'navigateViaGas(method,target.route,target.query,payload,false);' +
+        '});' +
+
+        'if(window.google.script.history&&typeof window.google.script.history.setChangeHandler==="function"){' +
+            'window.google.script.history.setChangeHandler(function(e){' +
+                'var loc=(e&&e.location)||{};' +
+                'var params=Object.assign({},loc.parameter||{});' +
+                'var routePath=String(params.route||"").replace(/^\\/+|\\/+$/g,"");' +
+                'delete params.route;' +
+                'navigateViaGas("GET",routePath,params,null,false);' +
+            '});' +
+        '}' +
+        '})();' +
+        '</script>';
+}
+
 function createHtmlOutputSafe(html, statusCode) {
     var content = String(html || "");
     if (typeof HtmlService !== "undefined" && typeof HtmlService.createHtmlOutput === "function") {
-        var out = HtmlService.createHtmlOutput(content);
+        var runtimeScript = _buildGasClientRuntimeScript();
+        var enhancedContent = content;
+
+        if (enhancedContent.indexOf("data-asal-gas-runtime") === -1) {
+            if (/<\/body>/i.test(enhancedContent)) {
+                enhancedContent = enhancedContent.replace(/<\/body>/i, runtimeScript + "</body>");
+            } else {
+                enhancedContent += runtimeScript;
+            }
+        }
+
+        var out = HtmlService.createHtmlOutput(enhancedContent);
         if (typeof out.setXFrameOptionsMode === "function" && HtmlService.XFrameOptionsMode) {
             out.setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+        }
+        if (typeof out.setSandboxMode === "function" && HtmlService.SandboxMode) {
+            out.setSandboxMode(HtmlService.SandboxMode.IFRAME);
+        }
+        if (typeof out.addMetaTag === "function") {
+            out.addMetaTag("viewport", "width=device-width, initial-scale=1");
+        }
+        var titleMatch = content.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        if (titleMatch && typeof out.setTitle === "function") {
+            out.setTitle(titleMatch[1].replace(/<[^>]+>/g, "").trim());
         }
         out._statusCode = statusCode || 200;
         return out;

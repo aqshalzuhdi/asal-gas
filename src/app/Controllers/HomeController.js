@@ -12,7 +12,7 @@ var HomeController = (function () {
 
                         return view("home", {
                             title: "Home",
-                            user: {name: "Aqshal"},
+                            user: { name: "Aqshal" },
                             items: res.data || [],
                             meta: res.meta || null
                         });
@@ -20,14 +20,14 @@ var HomeController = (function () {
 
                     create: function (ctx) {
                         return view("users.create", {
-                            title: "Tambah User",
+                            title: "Add User",
                             errors: {},
                             old: {}
                         });
                     },
 
                     store: function (ctx) {
-                        // Mendukung payload dari <form> HTML (ctx.payload.name) maupun API JSON (ctx.payload.data.name)
+                        // Support payloads from HTML <form> (ctx.payload.name) and JSON API (ctx.payload.data.name)
                         var input = (ctx.payload && ctx.payload.data && typeof ctx.payload.data === "object")
                             ? ctx.payload.data
                             : (ctx.payload || {});
@@ -46,7 +46,7 @@ var HomeController = (function () {
                             }
 
                             return view("users.create", {
-                                title: "Tambah User",
+                                title: "Add User",
                                 errors: validator.errors(),
                                 old: {
                                     name: input.name || "",
@@ -71,8 +71,8 @@ var HomeController = (function () {
                             }
 
                             return view("users.create", {
-                                title: "Tambah User",
-                                errorMessage: (created && created.message) || "Gagal menyimpan data.",
+                                title: "Add User",
+                                errorMessage: (created && created.message) || "Failed to save data.",
                                 errors: {},
                                 old: {
                                     name: input.name || "",
@@ -85,13 +85,13 @@ var HomeController = (function () {
                             return created;
                         }
 
-                        // Setelah berhasil simpan di Web, render ulang halaman index beserta pesan sukses
+                        // Re-render the index page with a success message after saving on Web
                         var listRes = read(this.sheet, { with: this.with }, 1, 10, "-id");
                         return view("home", {
                             title: "Home",
                             user: { name: "Aqshal" },
                             items: listRes.data || [],
-                            success: "User " + recordData.name + " berhasil ditambahkan."
+                            success: "User " + recordData.name + " added successfully."
                         });
                     },
 
@@ -100,7 +100,7 @@ var HomeController = (function () {
                         var item = find(this.sheet, id);
 
                         if (!item) {
-                            return failResponse("User dengan ID " + id + " tidak ditemukan.", 404);
+                            return failResponse("User with ID " + id + " not found.", 404);
                         }
 
                         return view("users.edit", {
@@ -119,7 +119,7 @@ var HomeController = (function () {
 
                         var existing = find(this.sheet, id);
                         if (!existing) {
-                            return failResponse("User dengan ID " + id + " tidak ditemukan.", 404);
+                            return failResponse("User with ID " + id + " not found.", 404);
                         }
 
                         var input = (ctx.payload && ctx.payload.data && typeof ctx.payload.data === "object")
@@ -170,7 +170,7 @@ var HomeController = (function () {
                             return view("users.edit", {
                                 title: "Edit User",
                                 item: existing,
-                                errorMessage: (updated && updated.message) || "Gagal memperbarui data.",
+                                errorMessage: (updated && updated.message) || "Failed to update data.",
                                 errors: {},
                                 old: {
                                     name: input.name || "",
@@ -186,7 +186,7 @@ var HomeController = (function () {
                             title: "Home",
                             user: { name: "Aqshal" },
                             items: listRes.data || [],
-                            success: "User " + recordData.name + " berhasil diperbarui."
+                            success: "User " + recordData.name + " updated successfully."
                         });
                     },
 
@@ -197,7 +197,7 @@ var HomeController = (function () {
 
                         var existing = find(this.sheet, id);
                         if (!existing) {
-                            return failResponse("User dengan ID " + id + " tidak ditemukan.", 404);
+                            return failResponse("User with ID " + id + " not found.", 404);
                         }
 
                         var deleted = destroy(this.sheet, existing.id);
@@ -210,7 +210,7 @@ var HomeController = (function () {
                                 title: "Home",
                                 user: { name: "Aqshal" },
                                 items: errList.data || [],
-                                errorMessage: (deleted && deleted.message) || "Gagal menghapus user."
+                                errorMessage: (deleted && deleted.message) || "Failed to delete user."
                             }, 400);
                         }
 
@@ -221,7 +221,7 @@ var HomeController = (function () {
                             title: "Home",
                             user: { name: "Aqshal" },
                             items: listRes.data || [],
-                            success: "User " + (existing.name || "#" + existing.id) + " berhasil dihapus."
+                            success: "User " + (existing.name || "#" + existing.id) + " deleted successfully."
                         });
                     }
                 });

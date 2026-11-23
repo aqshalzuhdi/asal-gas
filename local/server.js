@@ -32,7 +32,7 @@ function injectLiveReloadScript(html) {
     if (!isHotReloadEnabled() || typeof html !== "string") return html;
     if (html.includes("/__gas_reload")) return html;
 
-    const liveReloadScript = `<script>(function(){var es=new EventSource("/__gas_reload");es.onmessage=function(e){if(e.data==="reload")location.reload();};})();</script>`;
+    const liveReloadScript = `<script>(function(){var es=new EventSource("/__gas_reload");es.onmessage=function(e){if(e.data==="reload")location.reload();};window.addEventListener("beforeunload",function(){es.close();});window.addEventListener("pagehide",function(){es.close();});})();</script>`;
     return html.includes("</body>")
         ? html.replace("</body>", `${liveReloadScript}</body>`)
         : `${html}${liveReloadScript}`;
@@ -70,7 +70,11 @@ if (fs.existsSync(viewsWatchDir)) {
         clearTimeout(reloadDebounce);
         reloadDebounce = setTimeout(() => {
             for (const client of sseClients) {
-                client.write("data: reload\n\n");
+                try {
+                    client.write("data: reload\n\n");
+                } catch (_) {
+                    sseClients.delete(client);
+                }
             }
         }, 120);
     });
@@ -87,6 +91,11 @@ const server = http.createServer((req, res) => {
     }
 
     const parsedUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+
+    if (parsedUrl.pathname === "/favicon.ico") {
+        res.writeHead(204);
+        return res.end();
+    }
 
     if (parsedUrl.pathname === "/__gas_reload") {
         res.writeHead(200, {

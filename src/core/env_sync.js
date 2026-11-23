@@ -18,8 +18,10 @@ var EnvSync = {
             if (raw === null || raw === undefined) return;
             var val = String(raw).trim();
 
-            // Pertahankan SHEET_ID / BASE_URL yang sudah ada jika di .env kosong
-            if ((k === "SHEET_ID" || k === "BASE_URL") && val === "" && existing[k]) {
+            if ((k === "SHEET_ID" || k === "BASE_URL" || k === "APP_KEY") && val === "" && existing[k]) {
+                return;
+            }
+            if (k === "APP_KEY" && existing[k] && existing[k] !== val) {
                 return;
             }
 

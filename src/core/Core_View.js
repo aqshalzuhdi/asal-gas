@@ -230,6 +230,8 @@ var View = (function () {
             "var apiUrl = __h.apiUrl;",
             "var route = __h.route;",
             "var json = __h.json;",
+            "var csrfToken = __h.csrfToken;",
+            "var csrfField = __h.csrfField;",
             "with (__ctx) {"
         ];
 
@@ -287,7 +289,7 @@ var View = (function () {
                     continue;
                 }
 
-                var dirMatch = cleaned.slice(pos + 1).match(/^(extends|section|endsection|yield|includeIf|include|stack|push|endpush|if|elseif|else|endif|unless|endunless|isset|endisset|empty|endempty|forelse|endforelse|foreach|endforeach|for|endfor)\b/);
+                var dirMatch = cleaned.slice(pos + 1).match(/^(csrf|extends|section|endsection|yield|includeIf|include|stack|push|endpush|if|elseif|else|endif|unless|endunless|isset|endisset|empty|endempty|forelse|endforelse|foreach|endforeach|for|endfor)\b/);
 
                 if (dirMatch) {
                     var directive = dirMatch[1];
@@ -350,6 +352,12 @@ var View = (function () {
                             throw new Error("Unexpected @endforelse in view [" + viewName + "]");
                         }
                         code.push(fe.hasEmpty ? "}" : "}); }");
+                        pos = afterDir;
+                        continue;
+                    }
+                    if (directive === "csrf") {
+                        flushText();
+                        code.push("__write(__h.csrfField());");
                         pos = afterDir;
                         continue;
                     }
@@ -495,7 +503,14 @@ var View = (function () {
             }
             var merged = Object.assign({}, parentCtx, extraData || {});
             return renderInternal(key, merged, state);
-        }
+        },
+
+        csrfToken: function (ttl) {
+            return typeof Csrf !== "undefined" ? Csrf.token(ttl) : "";
+        },
+        csrfField: function (ttl) {
+            return typeof Csrf !== "undefined" ? Csrf.field(ttl) : "";
+        },
     };
 
     function renderInternal(normalizedName, contextData, sharedState) {
@@ -577,6 +592,19 @@ var View = (function () {
         },
 
         make: function (name, data, statusCode) {
+            var appMode = (typeof CONFIG !== "undefined" && typeof CONFIG.getOptional === "function")
+                ? String(CONFIG.getOptional("APP_MODE", "web") || "web").trim().toLowerCase()
+                : "web";
+
+            if (appMode !== "web") {
+                return {
+                    status: true,
+                    code: statusCode || 200,
+                    message: "Success",
+                    data: data || {}
+                };
+            }
+
             var html = this.render(name, data);
             if (typeof createHtmlOutputSafe === "function") {
                 return createHtmlOutputSafe(html, statusCode || 200);

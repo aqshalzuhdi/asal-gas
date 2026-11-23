@@ -15,6 +15,7 @@
     @endif
 
     <form method="POST" action="{{ route('users.update', { id: item.id }) }}" style="display:flex; flex-direction:column; gap:14px;">
+        @csrf
         <input type="hidden" name="_method" value="PUT">
 
         <div>
