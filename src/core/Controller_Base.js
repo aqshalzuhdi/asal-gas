@@ -6,34 +6,38 @@ var BaseController = {
         var defaultView = cfg.view || null;
 
         function defaultIndex(ctx, routeOpts) {
+            ctx = ctx || {};
+            var params = ctx.params || {};
+            var wantsJson = (typeof ctx.wantsJson === "function") ? ctx.wantsJson() : false;
             var opts = routeOpts || {};
             var targetSheet = opts.sheet || this.sheet;
             var targetView = opts.view || this.defaultView;
+            var extraData = (opts.data && typeof opts.data === "object") ? opts.data : {};
 
             if (!targetSheet) {
-                if (targetView && ctx && typeof ctx.wantsJson === "function" && !ctx.wantsJson()) {
-                    return view(targetView, { params: ctx.params || {} });
+                if (targetView && !wantsJson) {
+                    return view(targetView, Object.assign({ params: params }, extraData));
                 }
                 return failResponse("404 Not Found", 404);
             }
 
             var relations = (opts.with !== undefined) ? opts.with : this.with;
-            var flt = Object.assign({}, ctx.params);
+            var flt = Object.assign({}, params);
             flt.with = (Array.isArray(relations) && relations.length > 0) ? relations : "none";
 
-            var page = ctx.params.page || 1;
-            var perPage = ctx.params.per_page || 10;
-            var sort = ctx.params.sort || null;
+            var page = params.page || 1;
+            var perPage = params.per_page || 10;
+            var sort = params.sort || null;
 
             var res = read(targetSheet, flt, page, perPage, sort);
 
-            if (targetView && ctx && typeof ctx.wantsJson === "function" && !ctx.wantsJson()) {
-                return view(targetView, {
+            if (targetView && !wantsJson) {
+                return view(targetView, Object.assign({
                     items: res.data || [],
                     meta: res.meta || null,
                     pagination: res.meta || null,
                     result: res
-                });
+                }, extraData));
             }
 
             return res;
@@ -211,6 +215,19 @@ var BaseController = {
                     };
                 }
                 return view(viewName, data || {}, statusCode || 200);
+            },
+
+            renderIndex: function (ctx, extraData, routeOpts) {
+                var cleanCtx = {
+                    params: {},
+                    wantsJson: function () {
+                        return (ctx && typeof ctx.wantsJson === "function") ? ctx.wantsJson() : false;
+                    }
+                };
+                var mergedOpts = Object.assign({}, routeOpts || {}, {
+                    data: extraData || {}
+                });
+                return this.index(cleanCtx, mergedOpts);
             },
 
             index: typeof cfg.index === "function" ? cfg.index : defaultIndex,
