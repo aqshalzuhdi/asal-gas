@@ -1516,7 +1516,8 @@ function updateFrameworkFromRemote() {
         "src/core",
         "src/middleware",
         "src/config/config.js",
-        "local/runtime"
+        "local/runtime",
+        "local/server.js"
     ];
 
     const remotesRaw = execSync("git remote", { cwd: ROOT_DIR, encoding: "utf8" });
