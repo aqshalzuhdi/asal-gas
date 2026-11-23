@@ -643,6 +643,10 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
     var onlyTrashed = filters.only_trashed === true || String(filters.only_trashed) === "true";
     var includeDeleted = withTrashed || onlyTrashed;
 
+    function isFalseFlag(val) {
+        return val === false || String(val).toLowerCase() === "false" || val === 0 || val === "0";
+    }
+
     var normalizedColumns = [];
     var normalizedOrder = [];
 
@@ -727,19 +731,24 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
     var draw = parseInt(filters.draw, 10) || 0;
     var globalSearch = "";
-    if (filters.search && typeof filters.search === "object") {
-        globalSearch = filters.search.value || "";
-    } else if (typeof filters.search === "string") {
-        globalSearch = filters.search;
-    } else if (filters["search[value]"] !== undefined) {
-        globalSearch = filters["search[value]"];
+    if (filters.search !== undefined && filters.search !== null) {
+        if (typeof filters.search === "object") {
+            if (filters.search.value !== undefined && filters.search.value !== null) {
+                globalSearch = String(filters.search.value);
+            }
+        } else {
+            globalSearch = String(filters.search);
+        }
+    }
+    if (globalSearch === "" && filters["search[value]"] !== undefined && filters["search[value]"] !== null) {
+        globalSearch = String(filters["search[value]"]);
     }
 
     var columnSearches = [];
     for (var c = 0; c < normalizedColumns.length; c++) {
         var column = normalizedColumns[c];
         if (
-            column.searchable === false ||
+            isFalseFlag(column.searchable) ||
             !column.search ||
             column.search.value === undefined ||
             column.search.value === ""
@@ -828,11 +837,12 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
     var searchableColumns = [];
     var relationSearchColumns = [];
+    var hasExplicitColumnConfig = Array.isArray(normalizedColumns) && normalizedColumns.length > 0;
 
-    if (Array.isArray(normalizedColumns) && normalizedColumns.length > 0) {
+    if (hasExplicitColumnConfig) {
         for (var sc = 0; sc < normalizedColumns.length; sc++) {
             var sCol = normalizedColumns[sc];
-            if (sCol.searchable === false) continue;
+            if (isFalseFlag(sCol.searchable)) continue;
             var sColName = sCol.data || sCol.name;
             if (!sColName) continue;
 
@@ -844,7 +854,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         }
     }
 
-    if (searchableColumns.length === 0 && relationSearchColumns.length === 0) {
+    if (!hasExplicitColumnConfig) {
         for (var h = 0; h < headers.length; h++) {
             if (headers[h] !== "password" && headers[h] !== "deleted_at") {
                 searchableColumns.push(h);
@@ -877,6 +887,20 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
     registerEarlyPath(sortBy);
     if (groupBy) registerEarlyPath(groupBy);
+
+    var useNestedWithGlobalSearch = (
+        globalSearch !== "" &&
+        relationSearchColumns.length === 0 &&
+        withConfig.mode !== "none"
+    );
+
+    if (useNestedWithGlobalSearch && withConfig.mode === "selective") {
+        for (var wp in withConfig.allowed) {
+            if (withConfig.allowed.hasOwnProperty(wp)) {
+                earlyNeededPaths[wp] = true;
+            }
+        }
+    }
 
     if (globalSearch !== "") {
         for (var rsc = 0; rsc < relationSearchColumns.length; rsc++) {
@@ -950,11 +974,122 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         return lookupMap;
     }
 
+    function buildEarlyHasManyConfigs(parentSheetName, currentPath, depth, allowedPathsMap) {
+        if (depth > MAX_DEPTH) return [];
+        var childRels = schema.hasManyMap[parentSheetName] || [];
+        var configs = [];
+
+        for (var i = 0; i < childRels.length; i++) {
+            var cRel = childRels[i];
+            var cSheet = cRel.childSheet;
+            var nextPath = currentPath ? (currentPath + "." + cSheet) : cSheet;
+
+            if (allowedPathsMap && !allowedPathsMap[nextPath]) continue;
+
+            var cRows = sheetRowsCached(cSheet);
+            if (!cRows || cRows.length < 2) continue;
+
+            var cMeta = schema.sheets[cSheet];
+            var cHeaders = cRows[0];
+            var cDeletedIdx = cHeaders.indexOf("deleted_at");
+
+            var cBelongsTo = [];
+            if (cMeta && cMeta.belongsTo) {
+                for (var b = 0; b < cMeta.belongsTo.length; b++) {
+                    var bItem = cMeta.belongsTo[b];
+                    var bPath = nextPath + "." + bItem.propName;
+                    if (allowedPathsMap && !allowedPathsMap[bPath]) continue;
+
+                    var bMap = buildBelongsToMap(bItem.targetSheet, depth + 1, bPath, allowedPathsMap);
+                    if (bMap) {
+                        cBelongsTo.push({
+                            colIndex: bItem.colIndex,
+                            propName: bItem.propName,
+                            lookupMap: bMap
+                        });
+                    }
+                }
+            }
+
+            var nestedHasMany = buildEarlyHasManyConfigs(cSheet, nextPath, depth + 1, allowedPathsMap);
+            var grouped = {};
+
+            for (var r = 1; r < cRows.length; r++) {
+                var cRow = cRows[r];
+                if (
+                    !includeDeleted &&
+                    cDeletedIdx !== -1 &&
+                    cRow[cDeletedIdx] !== "" &&
+                    cRow[cDeletedIdx] !== null &&
+                    cRow[cDeletedIdx] !== undefined
+                ) continue;
+
+                var fkVal = cRow[cRel.fkIndex];
+                if (fkVal === null || fkVal === undefined || fkVal === "") continue;
+
+                var cObj = {};
+                for (var h = 0; h < cHeaders.length; h++) {
+                    var hKey = cHeaders[h];
+                    if (hKey === "password" || (hKey === "deleted_at" && !includeDeleted)) continue;
+                    cObj[hKey] = cRow[h];
+                }
+
+                for (var cb = 0; cb < cBelongsTo.length; cb++) {
+                    var cbCfg = cBelongsTo[cb];
+                    var cbFk = cRow[cbCfg.colIndex];
+                    var cbStr = (cbFk !== null && cbFk !== undefined) ? String(cbFk) : "";
+                    cObj[cbCfg.propName] = cbCfg.lookupMap[cbStr] || null;
+                }
+
+                if (nestedHasMany.length > 0 && cObj.id !== undefined && cObj.id !== null) {
+                    var cIdStr = String(cObj.id);
+                    for (var nh = 0; nh < nestedHasMany.length; nh++) {
+                        cObj[nestedHasMany[nh].childSheet] = nestedHasMany[nh].groupedByParentId[cIdStr] || [];
+                    }
+                }
+
+                var pStr = String(fkVal);
+                if (!grouped[pStr]) grouped[pStr] = [];
+                grouped[pStr].push(cObj);
+            }
+
+            configs.push({
+                childSheet: cSheet,
+                groupedByParentId: grouped
+            });
+        }
+
+        return configs;
+    }
+
+    function isNestedValueMatch(val, query, depth) {
+        if (val === null || val === undefined || depth > MAX_DEPTH + 1) return false;
+        if (typeof val !== "object" || val instanceof Date) {
+            return isSearchMatch(val, query);
+        }
+        if (Array.isArray(val)) {
+            for (var i = 0; i < val.length; i++) {
+                if (isNestedValueMatch(val[i], query, depth + 1)) return true;
+            }
+            return false;
+        }
+        var keys = Object.keys(val);
+        for (var k = 0; k < keys.length; k++) {
+            var key = keys[k];
+            if (key === "password" || key === "deleted_at") continue;
+            if (isNestedValueMatch(val[key], query, depth + 1)) return true;
+        }
+        return false;
+    }
+
+    var useAutoEarlyRelations = useNestedWithGlobalSearch && withConfig.mode === "auto";
+    var earlyAllowedMap = useAutoEarlyRelations ? null : earlyNeededPaths;
+
     var earlyBelongsToConfigs = [];
     for (var eb = 0; eb < sheetMeta.belongsTo.length; eb++) {
         var bRel = sheetMeta.belongsTo[eb];
-        if (earlyNeededPaths[bRel.propName]) {
-            var eMap = buildBelongsToMap(bRel.targetSheet, 1, bRel.propName, earlyNeededPaths);
+        if (useAutoEarlyRelations || earlyNeededPaths[bRel.propName]) {
+            var eMap = buildBelongsToMap(bRel.targetSheet, 1, bRel.propName, earlyAllowedMap);
             if (eMap) {
                 earlyBelongsToConfigs.push({
                     colIndex: bRel.colIndex,
@@ -964,6 +1099,10 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
             }
         }
     }
+
+    var earlyHasManyConfigs = useNestedWithGlobalSearch
+        ? buildEarlyHasManyConfigs(sheet_name, "", 1, earlyAllowedMap)
+        : [];
 
     var rowIndex = getRowIndex(sheet_name);
     var recordsTotal = onlyTrashed
@@ -1004,6 +1143,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
     var data = [];
     var deletedAtIndex = colMap.hasOwnProperty("deleted_at") ? colMap["deleted_at"] : -1;
+    var idColIndex = colMap.hasOwnProperty("id") ? colMap["id"] : -1;
     var scanLength = candidateArrayIndices !== null ? candidateArrayIndices.length : (rows.length - 1);
 
     for (var idx = 0; idx < scanLength; idx++) {
@@ -1033,11 +1173,38 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
                 }
             }
             if (!globalMatch) {
-                for (var rs = 0; rs < relationSearchColumns.length; rs++) {
-                    var relVal = getRelationValueFromConfig(earlyBelongsToConfigs, row, relationSearchColumns[rs]);
-                    if (isSearchMatch(relVal, globalSearch)) {
-                        globalMatch = true;
-                        break;
+                if (relationSearchColumns.length > 0) {
+                    for (var rs = 0; rs < relationSearchColumns.length; rs++) {
+                        var relVal = getRelationValueFromConfig(earlyBelongsToConfigs, row, relationSearchColumns[rs]);
+                        if (isNestedValueMatch(relVal, globalSearch, 0)) {
+                            globalMatch = true;
+                            break;
+                        }
+                    }
+                } else {
+                    for (var ebs = 0; ebs < earlyBelongsToConfigs.length; ebs++) {
+                        var ebCfgSearch = earlyBelongsToConfigs[ebs];
+                        var ebFkSearch = row[ebCfgSearch.colIndex];
+                        var ebStrSearch = (ebFkSearch !== null && ebFkSearch !== undefined) ? String(ebFkSearch) : "";
+                        var relObjSearch = ebCfgSearch.lookupMap[ebStrSearch];
+                        if (relObjSearch && isNestedValueMatch(relObjSearch, globalSearch, 0)) {
+                            globalMatch = true;
+                            break;
+                        }
+                    }
+
+                    if (!globalMatch && earlyHasManyConfigs.length > 0 && idColIndex !== -1) {
+                        var parentIdVal = row[idColIndex];
+                        if (parentIdVal !== null && parentIdVal !== undefined && parentIdVal !== "") {
+                            var parentIdStr = String(parentIdVal);
+                            for (var ehs = 0; ehs < earlyHasManyConfigs.length; ehs++) {
+                                var childList = earlyHasManyConfigs[ehs].groupedByParentId[parentIdStr];
+                                if (childList && isNestedValueMatch(childList, globalSearch, 0)) {
+                                    globalMatch = true;
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
