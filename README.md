@@ -357,7 +357,7 @@ Google Apps Script Web Apps dispatch routes via the `route` query parameter (`?r
 
 ### 1. API Health Check (`GET`)
 ```http
-GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<DEPLOYMENT_ID>/exec?route=api
+GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?route=api
 ```
 
 ### 2. Authentication (`POST ?route=api/login`)
@@ -370,7 +370,7 @@ GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<D
 
 ### 3. Query & Pagination (`GET ?route=api/<resource>`)
 ```http
-GET [https://script.google.com/macros/s/](https://script.google.com/macros/s/)<DEPLOYMENT_ID>/exec?route=api/users&session={{session}}&page=1&per_page=15&sort=-id
+GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?route=api/users&session={{session}}&page=1&per_page=15&sort=-id
 ```
 
 ### 4. Universal Mutation Envelope (`POST ?route=api/<resource>`)
