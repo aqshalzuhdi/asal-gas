@@ -1626,33 +1626,107 @@ function listRoutes() {
     console.log(`\nTotal routes: ${routes.length}\n`);
 }
 
+function listAllFilesInGitTree(ref) {
+    const res = spawnSync("git", ["ls-tree", "-r", "--name-only", ref], {
+        cwd: ROOT_DIR,
+        encoding: "utf8"
+    });
+    if (res.status !== 0) return [];
+    return String(res.stdout || "")
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+}
+
+function listLocalFilesRecursive(relDir) {
+    const absDir = path.join(ROOT_DIR, relDir);
+    if (!fs.existsSync(absDir) || !fs.statSync(absDir).isDirectory()) return [];
+    const results = [];
+
+    function walk(dir) {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                walk(fullPath);
+            } else if (entry.isFile()) {
+                results.push(path.relative(ROOT_DIR, fullPath).replace(/\\/g, "/"));
+            }
+        }
+    }
+
+    walk(absDir);
+    return results;
+}
+
+function checkoutFilesFromRef(ref, fileList) {
+    const chunkSize = 50;
+    for (let i = 0; i < fileList.length; i += chunkSize) {
+        const batch = fileList.slice(i, i + chunkSize);
+        const res = spawnSync("git", ["checkout", ref, "--", ...batch], {
+            cwd: ROOT_DIR,
+            stdio: "inherit"
+        });
+        if (res.status !== 0) {
+            process.exit(res.status || 1);
+        }
+    }
+}
+
+function syncClaspPushOrderAfterUpdate() {
+    if (!fs.existsSync(CLASP_FILE)) return;
+    try {
+        const cfg = JSON.parse(fs.readFileSync(CLASP_FILE, "utf8"));
+        const existingOrder = Array.isArray(cfg.filePushOrder) ? cfg.filePushOrder : [];
+        const mergedOrder = Array.from(new Set([...DEFAULT_FILE_PUSH_ORDER, ...existingOrder]));
+
+        if (JSON.stringify(existingOrder) !== JSON.stringify(mergedOrder)) {
+            cfg.filePushOrder = mergedOrder;
+            writeClaspConfig(cfg);
+            console.log("🔄 Synced 'filePushOrder' in .clasp.json.");
+        }
+    } catch (_) { }
+}
+
 function updateFrameworkFromRemote() {
     const remoteName = getFlagValue("--remote") || "framework";
     const branch = getFlagValue("--branch") || "main";
     const repoUrl = getFlagValue("--repo") || "https://github.com/aqshalzuhdi/asal-gas.git";
     const dryRun = flags.includes("--dry-run");
+    const isReexec = flags.includes("--reexec");
 
-    const protectedPaths = [
-        "src/routes/api.js",
-        "src/routes/web.js",
-        "src/resources/views",
-        "src/app/Controllers",
-        "src/database/migrations",
-        "src/database/seeders",
+    // Folder & file milik project user (tidak pernah ditimpa jika sudah ada)
+    const userOwnedPrefixes = [
+        "src/app/",
+        "src/routes/",
+        "src/resources/",
+        "src/database/",
+        "local/storage/",
+        ".github/",
+        ".vscode/"
+    ];
+
+    const userOwnedFiles = new Set([
+        ".env",
         ".clasp.json",
         "creds.json",
         ".clasprc.json",
-        "local/storage/db.json"
-    ];
+        "README.md",
+        "package-lock.json"
+    ]);
 
-    const frameworkTargets = [
-        "gas",
+    // Direktori murni milik framework (file usang di dalamnya otomatis dibersihkan)
+    const managedFrameworkDirs = [
         "src/core",
         "src/middleware",
-        "src/config/config.js",
+        "src/tools",
         "local/runtime",
-        "local/server.js"
+        "docs"
     ];
+
+    const generatedCoreFiles = new Set([
+        "src/core/Core_Views_Compiled.js"
+    ]);
 
     const remotesRaw = execSync("git remote", { cwd: ROOT_DIR, encoding: "utf8" });
     const remotes = remotesRaw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
@@ -1660,47 +1734,93 @@ function updateFrameworkFromRemote() {
     if (!remotes.includes(remoteName)) {
         console.log(`➕ Adding remote '${remoteName}' -> ${repoUrl}`);
         execSync(`git remote add ${remoteName} ${repoUrl}`, { cwd: ROOT_DIR, stdio: "inherit" });
+    } else if (getFlagValue("--repo")) {
+        execSync(`git remote set-url ${remoteName} ${repoUrl}`, { cwd: ROOT_DIR, stdio: "inherit" });
     }
 
-    console.log(`🔄 Fetching latest changes from ${remoteName}/${branch}...`);
-    execSync(`git fetch ${remoteName} ${branch}`, { cwd: ROOT_DIR, stdio: "inherit" });
+    if (!isReexec) {
+        console.log(`🔄 Fetching latest changes from ${remoteName}/${branch}...`);
+        execSync(`git fetch --tags ${remoteName} ${branch}`, { cwd: ROOT_DIR, stdio: "inherit" });
+    }
 
     const sourceRef = `${remoteName}/${branch}`;
-    const existingTargets = frameworkTargets.filter((target) => {
-        const check = spawnSync("git", ["cat-file", "-e", `${sourceRef}:${target}`], {
-            cwd: ROOT_DIR,
-            stdio: "ignore"
-        });
-        return check.status === 0;
-    });
+    const allRemoteFiles = listAllFilesInGitTree(sourceRef);
 
-    if (existingTargets.length === 0) {
-        console.error(`❌ No framework files found at ${sourceRef}.`);
+    if (allRemoteFiles.length === 0) {
+        console.error(`❌ No files found at ${sourceRef}.`);
         process.exit(1);
     }
 
-    console.log("🛡️  Protected project files (untouched):");
-    protectedPaths.forEach((p) => console.log(`   - ${p}`));
+    const isProtectedPath = (relPath) => {
+        if (userOwnedFiles.has(relPath)) return true;
+        return userOwnedPrefixes.some((prefix) => relPath.startsWith(prefix));
+    };
 
-    console.log("📦 Updating framework files:");
-    existingTargets.forEach((t) => console.log(`   - ${t}`));
+    const filesToSync = allRemoteFiles.filter((relPath) => !isProtectedPath(relPath));
+
+    if (!isReexec) {
+        console.log("🛡️  Protected project paths (untouched):");
+        [...userOwnedPrefixes, ...Array.from(userOwnedFiles)].forEach((p) => console.log(`   - ${p}`));
+        console.log(`📦 Discovered ${filesToSync.length} framework file(s) from ${sourceRef}.`);
+    }
 
     if (dryRun) {
+        filesToSync.forEach((f) => console.log(`   - ${f}`));
         console.log("\nℹ️  Dry run selesai. Tidak ada file yang diubah.");
         return;
     }
 
-    for (const target of existingTargets) {
-        execSync(`git checkout ${sourceRef} -- "${target}"`, { cwd: ROOT_DIR, stdio: "inherit" });
-    }
-
-    for (const prot of protectedPaths) {
-        if (fs.existsSync(path.join(ROOT_DIR, prot))) {
-            spawnSync("git", ["checkout", "--", prot], { cwd: ROOT_DIR, stdio: "ignore" });
+    // 1. Update CLI + local/runtime terlebih dahulu lalu re-exec agar versi terbaru yang mengeksekusi sisa proses
+    if (!isReexec) {
+        const bootstrapFiles = filesToSync.filter(
+            (f) => f === "gas" || f === "gas.cmd" || f.startsWith("local/runtime/")
+        );
+        if (bootstrapFiles.length > 0) {
+            checkoutFilesFromRef(sourceRef, bootstrapFiles);
+            const forwardedArgs = rawArgs.filter((a) => a !== "--reexec");
+            const reexecRes = spawnSync(
+                process.execPath,
+                [__filename, "framework:update", "--reexec", ...forwardedArgs],
+                { cwd: ROOT_DIR, stdio: "inherit" }
+            );
+            process.exit(reexecRes.status || 0);
         }
     }
 
-    console.log("\n✅ Framework files updated. Review 'git status' & 'git diff', then commit changes.");
+    // 2. Bersihkan file usang di direktori framework yang sudah dihapus di versi terbaru
+    const remoteFileSet = new Set(allRemoteFiles);
+    for (const dirTarget of managedFrameworkDirs) {
+        const localFiles = listLocalFilesRecursive(dirTarget);
+        for (const localFile of localFiles) {
+            if (generatedCoreFiles.has(localFile)) continue;
+            if (!remoteFileSet.has(localFile)) {
+                fs.rmSync(path.join(ROOT_DIR, localFile), { force: true });
+                console.log(`🗑️  Removed obsolete file: ${localFile}`);
+            }
+        }
+    }
+
+    // 3. Tarik semua file framework (termasuk file/folder baru apapun di versi mendatang)
+    checkoutFilesFromRef(sourceRef, filesToSync);
+
+    // 4. Scaffold file wajib baru jika project berasal dari v1.0.0 dan belum memilikinya
+    const webRouteFile = path.join(SRC_DIR, "routes", "web.js");
+    if (!fs.existsSync(webRouteFile)) {
+        writeSrcFile(
+            "routes/web.js",
+            `function registerWebRoutes() {\n    Route.get("/", "HomeController@index");\n}\n`
+        );
+    }
+
+    // 5. Sinkronkan filePushOrder di .clasp.json, manifest scopes, dan compile views
+    syncClaspPushOrderAfterUpdate();
+    if (ensureManifestScopes()) {
+        console.log("🔄 Updated OAuth scopes & executionApi in src/appsscript.json.");
+    }
+    compileViews();
+
+    console.log("\n✅ Framework files updated to latest version.");
+    console.log("👉 Run 'npm install' (if package.json changed), review 'git status' & 'git diff', then commit.");
 }
 
 (async function main() {
