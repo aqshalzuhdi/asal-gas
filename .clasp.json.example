@@ -1,5 +1,5 @@
 {
-    "scriptId": "ISI_SCRIPT_ID_PROJECT_GAS_KAMU",
+    "scriptId": "PASTE_YOUR_GAS_SCRIPT_ID_HERE",
     "rootDir": "./src",
     "scriptExtensions": [
         ".js",
@@ -15,13 +15,18 @@
         "src/config/config.js",
         "src/core/database.js",
         "src/core/foglobal.js",
+        "src/core/Core_View.js",
+        "src/core/Core_Views_Compiled.js",
         "src/core/hash.js",
+        "src/core/Csrf.js",
         "src/core/crud.js",
         "src/core/Core_Router.js",
         "src/core/Database_Migration.js",
         "src/core/Database_Seeder.js",
+        "src/core/Model_Base.js",
         "src/core/Controller_Base.js",
-        "src/middleware/middleware.js"
+        "src/middleware/middleware.js",
+        "src/core/env_sync.js"
     ],
     "skipSubdirectories": false
 }

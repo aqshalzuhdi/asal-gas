@@ -43,6 +43,9 @@ var View = (function () {
 
     function escapeHtmlValue(val) {
         if (val === null || val === undefined) return "";
+        if (typeof val === "object" && !(val instanceof Date)) {
+            val = JSON.stringify(val, null, 2);
+        }
         return String(val)
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
@@ -53,6 +56,9 @@ var View = (function () {
 
     function rawValue(val) {
         if (val === null || val === undefined) return "";
+        if (typeof val === "object" && !(val instanceof Date)) {
+            return JSON.stringify(val, null, 2);
+        }
         return String(val);
     }
 

@@ -85,7 +85,7 @@ var ChunkedCache = {
                 }
             }
             cache.removeAll(keysToRemove);
-        } catch (e) {}
+        } catch (e) { }
     }
 };
 
@@ -330,6 +330,34 @@ var parseDateValue = parseDateValue || function (val) {
     return null;
 };
 
+function compareSortValues(a, b, direction) {
+    var multiplier = direction === "DESC" ? -1 : 1;
+    if (a === null || a === undefined || a === "") {
+        return (b === null || b === undefined || b === "") ? 0 : 1;
+    }
+    if (b === null || b === undefined || b === "") return -1;
+
+    var strA = String(a).trim();
+    var strB = String(b).trim();
+    var numericPattern = /^-?\d+(?:\.\d+)?$/;
+
+    if (numericPattern.test(strA) && numericPattern.test(strB)) {
+        var numA = Number(strA);
+        var numB = Number(strB);
+        return numA < numB ? -1 * multiplier : (numA > numB ? 1 * multiplier : 0);
+    }
+
+    var dateA = parseDateValue(a);
+    var dateB = parseDateValue(b);
+    if (dateA !== null && dateB !== null) {
+        return dateA < dateB ? -1 * multiplier : (dateA > dateB ? 1 * multiplier : 0);
+    }
+
+    strA = strA.toLowerCase();
+    strB = strB.toLowerCase();
+    return strA < strB ? -1 * multiplier : (strA > strB ? 1 * multiplier : 0);
+}
+
 function resolveDotPath(obj, path) {
     var parts = path.split(".");
     var current = obj;
@@ -340,18 +368,18 @@ function resolveDotPath(obj, path) {
     return current;
 }
 
-function getRelationValueFromConfig(belongsToConfigs, row, path) {
+function getRelationValueFromConfig(singleConfigs, row, path) {
     var parts = path.split(".");
     var rootProp = parts[0];
     var config = null;
 
-    for (var i = 0; i < belongsToConfigs.length; i++) {
-        if (belongsToConfigs[i].propName === rootProp) {
-            config = belongsToConfigs[i];
+    for (var i = 0; i < singleConfigs.length; i++) {
+        if (singleConfigs[i].propName === rootProp) {
+            config = singleConfigs[i];
             break;
         }
     }
-    if (!config) return null;
+    if (!config || config.colIndex === -1) return null;
 
     var fkVal = row[config.colIndex];
     var fkStr = (fkVal !== null && fkVal !== undefined) ? String(fkVal) : "";
@@ -406,7 +434,121 @@ function parseWithRelations(withParam) {
     return { mode: "selective", allowed: allowed };
 }
 
+function getAllSingleRelationsForSheet(sheetName) {
+    var result = [];
+    var seen = {};
+
+    if (typeof Model !== "undefined" && typeof Model.getAllRelations === "function") {
+        var modelRels = Model.getAllRelations(sheetName);
+        Object.keys(modelRels).forEach(function (relName) {
+            var desc = modelRels[relName];
+            if (desc && (desc.type === "belongsTo" || desc.type === "hasOne")) {
+                result.push(desc);
+                seen[relName] = true;
+            }
+        });
+    }
+
+    var schema = getSchemaMetadata();
+    var sheetMeta = schema.sheets[sheetName];
+    if (sheetMeta && Array.isArray(sheetMeta.belongsTo)) {
+        for (var i = 0; i < sheetMeta.belongsTo.length; i++) {
+            var b = sheetMeta.belongsTo[i];
+            if (!seen[b.propName]) {
+                result.push({
+                    type: "belongsTo",
+                    name: b.propName,
+                    targetTable: b.targetSheet,
+                    foreignKey: b.colName,
+                    ownerKey: "id",
+                    constraints: []
+                });
+            }
+        }
+    }
+
+    return result;
+}
+
+function getAllCollectionRelationsForSheet(sheetName) {
+    var result = [];
+    var seen = {};
+
+    if (typeof Model !== "undefined" && typeof Model.getAllRelations === "function") {
+        var modelRels = Model.getAllRelations(sheetName);
+        Object.keys(modelRels).forEach(function (relName) {
+            var desc = modelRels[relName];
+            if (desc && (desc.type === "hasMany" || desc.type === "belongsToMany")) {
+                result.push(desc);
+                seen[relName] = true;
+            }
+        });
+    }
+
+    var schema = getSchemaMetadata();
+    var childRels = (schema.hasManyMap && schema.hasManyMap[sheetName]) || [];
+    for (var i = 0; i < childRels.length; i++) {
+        var h = childRels[i];
+        if (!seen[h.childSheet]) {
+            result.push({
+                type: "hasMany",
+                name: h.childSheet,
+                targetTable: h.childSheet,
+                foreignKey: h.fkCol,
+                localKey: "id",
+                constraints: []
+            });
+        }
+    }
+
+    return result;
+}
+
+function matchesRelationConstraints(rowObj, constraints) {
+    if (!Array.isArray(constraints) || constraints.length === 0) return true;
+    for (var i = 0; i < constraints.length; i++) {
+        var c = constraints[i];
+        var actual = rowObj[c.column];
+        var op = String(c.operator || "=").toUpperCase();
+        var expected = c.value;
+
+        if (op === "=" && String(actual) !== String(expected)) return false;
+        if (op === "!=" && String(actual) === String(expected)) return false;
+        if (op === ">" && !(Number(actual) > Number(expected))) return false;
+        if (op === ">=" && !(Number(actual) >= Number(expected))) return false;
+        if (op === "<" && !(Number(actual) < Number(expected))) return false;
+        if (op === "<=" && !(Number(actual) <= Number(expected))) return false;
+        if (op === "LIKE" && String(actual || "").toLowerCase().indexOf(String(expected).toLowerCase()) === -1) return false;
+    }
+    return true;
+}
+
+function applyModelRowFormat(sheetName, obj, formatOpts) {
+    if (typeof Model !== "undefined" && typeof Model.applyOutputTransforms === "function") {
+        var opts = (typeof formatOpts === "boolean")
+            ? { withPassword: formatOpts }
+            : (formatOpts || {});
+        return Model.applyOutputTransforms(sheetName, obj, opts);
+    }
+    return obj;
+}
+
+function prepareModelInputData(sheetName, rawData) {
+    if (typeof Model !== "undefined" && typeof Model.prepareInputAttributes === "function") {
+        return Model.prepareInputAttributes(sheetName, rawData);
+    }
+    return Object.assign({}, rawData || {});
+}
+
+function ensureModelResolved(sheetName) {
+    if (typeof Model !== "undefined" && typeof Model.resolve === "function") {
+        Model.resolve(sheetName);
+    }
+}
+
 function find(sheet_name, id, options) {
+    ensureModelResolved(sheet_name);
+
     if (id === undefined || id === null || id === "") {
         return null;
     }
@@ -414,6 +556,8 @@ function find(sheet_name, id, options) {
     var opts = options || {};
     var withOpt = opts.with !== undefined ? opts.with : "none";
     var withPassword = opts.with_password === true;
+    var makeVisible = opts.make_visible || [];
+    var makeHidden = opts.make_hidden || [];
     var withTrashed = opts.with_trashed === true;
     var onlyTrashed = opts.only_trashed === true;
 
@@ -432,18 +576,21 @@ function find(sheet_name, id, options) {
         var row = rows[targetSheetRow - 1];
         var obj = {};
         for (var i = 0; i < headers.length; i++) {
-            var key = headers[i];
-            if (key === "password" && !withPassword) continue;
-            if (key === "deleted_at") continue;
-            obj[key] = row[i];
+            obj[headers[i]] = row[i];
         }
-        return obj;
+        return applyModelRowFormat(sheet_name, obj, {
+            withPassword: withPassword,
+            makeVisible: makeVisible,
+            makeHidden: makeHidden
+        });
     }
 
     var res = read(sheet_name, {
         id: id,
         with: withOpt,
         with_password: withPassword,
+        make_visible: makeVisible,
+        make_hidden: makeHidden,
         with_trashed: withTrashed,
         only_trashed: onlyTrashed
     }, 1, 1, null);
@@ -455,6 +602,8 @@ function find(sheet_name, id, options) {
 }
 
 function create(sheet_name, payload) {
+    ensureModelResolved(sheet_name);
+
     if (!payload || payload.data === undefined) {
         return { status: false, message: "Invalid payload format." };
     }
@@ -466,7 +615,7 @@ function create(sheet_name, payload) {
         var schema = getSchemaMetadata();
         var sheetMeta = schema.sheets[sheet_name] || getSchemaMetadata(true).sheets[sheet_name];
         var headers = sheetMeta.headers;
-        var data = payload.data;
+        var data = prepareModelInputData(sheet_name, payload.data);
 
         for (var b = 0; b < sheetMeta.belongsTo.length; b++) {
             var rel = sheetMeta.belongsTo[b];
@@ -517,13 +666,18 @@ function create(sheet_name, payload) {
         invalidateSheetCache(sheet_name, false);
 
         var responseData = Object.assign({}, data, { id: defId });
-        delete responseData.password;
+        if (headers.indexOf("deleted_at") !== -1 && responseData.deleted_at === undefined) {
+            responseData.deleted_at = "";
+        }
+        applyModelRowFormat(sheet_name, responseData, false);
 
         return { status: true, message: "Data successfully created.", data: responseData };
     });
 }
 
 function bulkCreate(sheet_name, payloadOrRecords) {
+    ensureModelResolved(sheet_name);
+
     var records = Array.isArray(payloadOrRecords)
         ? payloadOrRecords
         : (payloadOrRecords && Array.isArray(payloadOrRecords.data) ? payloadOrRecords.data : null);
@@ -549,11 +703,15 @@ function bulkCreate(sheet_name, payloadOrRecords) {
             };
         }
 
+        var normalizedRecords = [];
         for (var rIdx = 0; rIdx < records.length; rIdx++) {
-            var rec = records[rIdx];
-            if (!rec || typeof rec !== "object") {
+            var rawRec = records[rIdx];
+            if (!rawRec || typeof rawRec !== "object") {
                 return { status: false, message: "Invalid record at index " + rIdx + "." };
             }
+
+            var rec = prepareModelInputData(sheet_name, rawRec);
+            normalizedRecords.push(rec);
 
             for (var fkCol in fkIndexes) {
                 if (rec.hasOwnProperty(fkCol)) {
@@ -582,8 +740,8 @@ function bulkCreate(sheet_name, payloadOrRecords) {
         var rowsMatrix = [];
         var createdRecords = [];
 
-        for (var i = 0; i < records.length; i++) {
-            var item = records[i];
+        for (var i = 0; i < normalizedRecords.length; i++) {
+            var item = normalizedRecords[i];
             var assignedId = nextId++;
             var rowValues = [];
 
@@ -608,7 +766,10 @@ function bulkCreate(sheet_name, payloadOrRecords) {
             rowsMatrix.push(rowValues);
 
             var cleanItem = Object.assign({}, item, { id: assignedId });
-            delete cleanItem.password;
+            if (headers.indexOf("deleted_at") !== -1 && cleanItem.deleted_at === undefined) {
+                cleanItem.deleted_at = "";
+            }
+            applyModelRowFormat(sheet_name, cleanItem, false);
             createdRecords.push(cleanItem);
         }
 
@@ -625,6 +786,8 @@ function bulkCreate(sheet_name, payloadOrRecords) {
 }
 
 function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
+    ensureModelResolved(sheet_name);
+
     var getSheet = sheet().getSheetByName(sheet_name);
     if (!getSheet) {
         return { status: false, message: "Sheet does not exist." };
@@ -638,7 +801,39 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
     var filters = flt ? Object.assign({}, flt) : {};
     var groupBy = filters.group_by || null;
     var withConfig = parseWithRelations(filters.with);
+
     var withPassword = filters.with_password === true || String(filters.with_password) === "true";
+    var makeVisible = Array.isArray(filters.make_visible)
+        ? filters.make_visible
+        : (filters.make_visible ? [filters.make_visible] : []);
+    var makeHidden = Array.isArray(filters.make_hidden)
+        ? filters.make_hidden
+        : (filters.make_hidden ? [filters.make_hidden] : []);
+    var rowFormatOpts = {
+        withPassword: withPassword,
+        makeVisible: makeVisible,
+        makeHidden: makeHidden
+    };
+
+    var effectiveHiddenMap = {};
+    var resolvedMeta = (typeof Model !== "undefined" && typeof Model.resolve === "function")
+        ? Model.resolve(sheet_name)
+        : null;
+    if (resolvedMeta && Array.isArray(resolvedMeta.hidden)) {
+        for (var hm = 0; hm < resolvedMeta.hidden.length; hm++) {
+            effectiveHiddenMap[resolvedMeta.hidden[hm]] = true;
+        }
+    }
+    for (var mhi = 0; mhi < makeHidden.length; mhi++) {
+        if (makeHidden[mhi]) effectiveHiddenMap[String(makeHidden[mhi])] = true;
+    }
+    if (withPassword) {
+        delete effectiveHiddenMap["password"];
+    }
+    for (var mvi = 0; mvi < makeVisible.length; mvi++) {
+        if (makeVisible[mvi]) delete effectiveHiddenMap[String(makeVisible[mvi])];
+    }
+
     var withTrashed = filters.with_trashed === true || String(filters.with_trashed) === "true";
     var onlyTrashed = filters.only_trashed === true || String(filters.only_trashed) === "true";
     var includeDeleted = withTrashed || onlyTrashed;
@@ -787,7 +982,8 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         "action", "sheet", "route", "page", "per_page", "sort",
         "session", "draw", "start", "length", "search",
         "search[value]", "search[regex]", "columns", "order",
-        "group_by", "with", "with_password", "with_trashed", "only_trashed"
+        "group_by", "with", "with_password", "make_visible", "make_hidden",
+        "with_trashed", "only_trashed"
     ];
     for (var s = 0; s < systemKeys.length; s++) {
         delete filters[systemKeys[s]];
@@ -811,27 +1007,28 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         customFilters[key] = filters[key];
     });
 
-    var validBelongsToProps = {};
-    for (var b = 0; b < sheetMeta.belongsTo.length; b++) {
-        validBelongsToProps[sheetMeta.belongsTo[b].propName] = true;
+    var validRelationProps = {};
+    var allSingleRels = getAllSingleRelationsForSheet(sheet_name);
+    for (var vr = 0; vr < allSingleRels.length; vr++) {
+        validRelationProps[allSingleRels[vr].name] = true;
     }
 
     for (var key in customFilters) {
         var rootCol = key.split(".")[0];
-        if (!colMap.hasOwnProperty(rootCol) && !validBelongsToProps[rootCol]) {
+        if (!colMap.hasOwnProperty(rootCol) && !validRelationProps[rootCol]) {
             return { status: false, message: "Column '" + key + "' does not exist in sheet " + sheet_name + "." };
         }
     }
 
     for (var cs = 0; cs < columnSearches.length; cs++) {
         var csRoot = columnSearches[cs].column.split(".")[0];
-        if (!colMap.hasOwnProperty(csRoot) && !validBelongsToProps[csRoot]) {
+        if (!colMap.hasOwnProperty(csRoot) && !validRelationProps[csRoot]) {
             return { status: false, message: "Search column '" + columnSearches[cs].column + "' does not exist." };
         }
     }
 
     var sortRoot = sortBy.split(".")[0];
-    if (!colMap.hasOwnProperty(sortRoot) && !validBelongsToProps[sortRoot]) {
+    if (!colMap.hasOwnProperty(sortRoot) && !validRelationProps[sortRoot]) {
         return { status: false, message: "Sort column '" + sortBy + "' does not exist." };
     }
 
@@ -848,7 +1045,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
             if (sColName.indexOf(".") !== -1) {
                 relationSearchColumns.push(sColName);
-            } else if (colMap.hasOwnProperty(sColName) && sColName !== "password" && sColName !== "deleted_at") {
+            } else if (colMap.hasOwnProperty(sColName) && !effectiveHiddenMap[sColName]) {
                 searchableColumns.push(colMap[sColName]);
             }
         }
@@ -856,7 +1053,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
     if (!hasExplicitColumnConfig) {
         for (var h = 0; h < headers.length; h++) {
-            if (headers[h] !== "password" && headers[h] !== "deleted_at") {
+            if (!effectiveHiddenMap[headers[h]]) {
                 searchableColumns.push(h);
             }
         }
@@ -916,150 +1113,213 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
     var MAX_DEPTH = 3;
 
-    function buildBelongsToMap(targetSheetName, currentDepth, currentPath, allowedPathsMap) {
-        if (currentDepth > MAX_DEPTH) return null;
+    function buildSingleRelationMap(relDesc, currentDepth, currentPath, allowedPathsMap) {
+        if (currentDepth > MAX_DEPTH || !relDesc || !relDesc.targetTable) return null;
 
-        var relRows = sheetRowsCached(targetSheetName);
+        var relRows = sheetRowsCached(relDesc.targetTable);
         if (!relRows || relRows.length < 2) return null;
 
-        var relMeta = schema.sheets[targetSheetName];
         var relHeaders = relRows[0];
-        var relIdIdx = relHeaders.indexOf("id");
         var relDeletedIdx = relHeaders.indexOf("deleted_at");
-        if (relIdIdx === -1) return null;
 
+        var matchColName = relDesc.type === "hasOne"
+            ? (relDesc.foreignKey || "id")
+            : (relDesc.ownerKey || "id");
+        var matchColIdx = relHeaders.indexOf(matchColName);
+        if (matchColIdx === -1) return null;
+
+        var nestedSingleRels = getAllSingleRelationsForSheet(relDesc.targetTable);
         var nestedConfigs = [];
-        if (relMeta && relMeta.belongsTo) {
-            for (var nb = 0; nb < relMeta.belongsTo.length; nb++) {
-                var nRel = relMeta.belongsTo[nb];
-                var nextPath = currentPath + "." + nRel.propName;
+        for (var nb = 0; nb < nestedSingleRels.length; nb++) {
+            var nRel = nestedSingleRels[nb];
+            var nextPath = currentPath + "." + nRel.name;
+            if (allowedPathsMap && !allowedPathsMap[nextPath]) continue;
 
-                if (allowedPathsMap && !allowedPathsMap[nextPath]) {
-                    continue;
-                }
-
-                var nestedMap = buildBelongsToMap(nRel.targetSheet, currentDepth + 1, nextPath, allowedPathsMap);
-                if (nestedMap) {
-                    nestedConfigs.push({
-                        colIndex: nRel.colIndex,
-                        propName: nRel.propName,
-                        lookupMap: nestedMap
-                    });
-                }
+            var nestedMap = buildSingleRelationMap(nRel, currentDepth + 1, nextPath, allowedPathsMap);
+            if (nestedMap) {
+                nestedConfigs.push({
+                    propName: nRel.name,
+                    sourceKey: nRel.type === "hasOne" ? (nRel.localKey || "id") : nRel.foreignKey,
+                    lookupMap: nestedMap
+                });
             }
         }
 
-        var lookupMap = {};
+        var candidatesByKey = {};
         for (var r = 1; r < relRows.length; r++) {
             var rRow = relRows[r];
             if (!includeDeleted && relDeletedIdx !== -1 && rRow[relDeletedIdx] !== "") continue;
 
+            var keyVal = rRow[matchColIdx];
+            if (keyVal === null || keyVal === undefined || keyVal === "") continue;
+
             var rObj = {};
             for (var rh = 0; rh < relHeaders.length; rh++) {
-                var rKey = relHeaders[rh];
-                if (rKey === "password" || (rKey === "deleted_at" && !includeDeleted)) continue;
-                rObj[rKey] = rRow[rh];
+                rObj[relHeaders[rh]] = rRow[rh];
             }
+
+            if (!matchesRelationConstraints(rObj, relDesc.constraints)) continue;
 
             for (var nbc = 0; nbc < nestedConfigs.length; nbc++) {
-                var nbConfig = nestedConfigs[nbc];
-                var nFkVal = rRow[nbConfig.colIndex];
+                var nbCfg = nestedConfigs[nbc];
+                var nFkVal = rObj[nbCfg.sourceKey];
                 var nFkStr = (nFkVal !== null && nFkVal !== undefined) ? String(nFkVal) : "";
-                rObj[nbConfig.propName] = nbConfig.lookupMap[nFkStr] || null;
+                rObj[nbCfg.propName] = nbCfg.lookupMap[nFkStr] || null;
             }
 
-            lookupMap[String(rRow[relIdIdx])] = rObj;
+            applyModelRowFormat(relDesc.targetTable, rObj, false);
+
+            var mapKey = String(keyVal);
+            if (!candidatesByKey[mapKey]) candidatesByKey[mapKey] = [];
+            candidatesByKey[mapKey].push(rObj);
         }
+
+        var sortCol = relDesc.orderByCol || "id";
+        var sortDir = relDesc.orderByDir || "DESC";
+        var lookupMap = {};
+
+        Object.keys(candidatesByKey).forEach(function (k) {
+            var list = candidatesByKey[k];
+            if (list.length > 1) {
+                list.sort(function (a, b) {
+                    return compareSortValues(a[sortCol], b[sortCol], sortDir);
+                });
+            }
+            lookupMap[k] = list[0] || null;
+        });
 
         return lookupMap;
     }
 
-    function buildEarlyHasManyConfigs(parentSheetName, currentPath, depth, allowedPathsMap) {
-        if (depth > MAX_DEPTH) return [];
-        var childRels = schema.hasManyMap[parentSheetName] || [];
-        var configs = [];
+    function buildCollectionLookupMap(relDesc, currentPath, depth, allowedPathsMap) {
+        if (depth > MAX_DEPTH || !relDesc || !relDesc.targetTable) return null;
 
-        for (var i = 0; i < childRels.length; i++) {
-            var cRel = childRels[i];
-            var cSheet = cRel.childSheet;
-            var nextPath = currentPath ? (currentPath + "." + cSheet) : cSheet;
+        var childSheetName = relDesc.targetTable;
+        var childRows = sheetRowsCached(childSheetName);
+        if (!childRows || childRows.length < 2) return null;
 
-            if (allowedPathsMap && !allowedPathsMap[nextPath]) continue;
+        var childHeaders = childRows[0];
+        var deletedIndex = childHeaders.indexOf("deleted_at");
+        var childGroupMap = {};
 
-            var cRows = sheetRowsCached(cSheet);
-            if (!cRows || cRows.length < 2) continue;
+        if (relDesc.type === "belongsToMany") {
+            var pivotRows = sheetRowsCached(relDesc.pivotTable);
+            if (!pivotRows || pivotRows.length < 2) return null;
 
-            var cMeta = schema.sheets[cSheet];
-            var cHeaders = cRows[0];
-            var cDeletedIdx = cHeaders.indexOf("deleted_at");
+            var pivotHeaders = pivotRows[0];
+            var fPivotIdx = pivotHeaders.indexOf(relDesc.foreignPivotKey);
+            var rPivotIdx = pivotHeaders.indexOf(relDesc.relatedPivotKey);
+            var relKeyIdx = childHeaders.indexOf(relDesc.relatedKey || "id");
+            if (fPivotIdx === -1 || rPivotIdx === -1 || relKeyIdx === -1) return null;
 
-            var cBelongsTo = [];
-            if (cMeta && cMeta.belongsTo) {
-                for (var b = 0; b < cMeta.belongsTo.length; b++) {
-                    var bItem = cMeta.belongsTo[b];
-                    var bPath = nextPath + "." + bItem.propName;
-                    if (allowedPathsMap && !allowedPathsMap[bPath]) continue;
-
-                    var bMap = buildBelongsToMap(bItem.targetSheet, depth + 1, bPath, allowedPathsMap);
-                    if (bMap) {
-                        cBelongsTo.push({
-                            colIndex: bItem.colIndex,
-                            propName: bItem.propName,
-                            lookupMap: bMap
-                        });
-                    }
-                }
-            }
-
-            var nestedHasMany = buildEarlyHasManyConfigs(cSheet, nextPath, depth + 1, allowedPathsMap);
-            var grouped = {};
-
-            for (var r = 1; r < cRows.length; r++) {
-                var cRow = cRows[r];
-                if (
-                    !includeDeleted &&
-                    cDeletedIdx !== -1 &&
-                    cRow[cDeletedIdx] !== "" &&
-                    cRow[cDeletedIdx] !== null &&
-                    cRow[cDeletedIdx] !== undefined
-                ) continue;
-
-                var fkVal = cRow[cRel.fkIndex];
-                if (fkVal === null || fkVal === undefined || fkVal === "") continue;
-
+            var targetById = {};
+            for (var cr = 1; cr < childRows.length; cr++) {
+                var cRow = childRows[cr];
+                if (!includeDeleted && deletedIndex !== -1 && cRow[deletedIndex] !== "") continue;
                 var cObj = {};
-                for (var h = 0; h < cHeaders.length; h++) {
-                    var hKey = cHeaders[h];
-                    if (hKey === "password" || (hKey === "deleted_at" && !includeDeleted)) continue;
-                    cObj[hKey] = cRow[h];
+                for (var ch = 0; ch < childHeaders.length; ch++) {
+                    cObj[childHeaders[ch]] = cRow[ch];
                 }
-
-                for (var cb = 0; cb < cBelongsTo.length; cb++) {
-                    var cbCfg = cBelongsTo[cb];
-                    var cbFk = cRow[cbCfg.colIndex];
-                    var cbStr = (cbFk !== null && cbFk !== undefined) ? String(cbFk) : "";
-                    cObj[cbCfg.propName] = cbCfg.lookupMap[cbStr] || null;
-                }
-
-                if (nestedHasMany.length > 0 && cObj.id !== undefined && cObj.id !== null) {
-                    var cIdStr = String(cObj.id);
-                    for (var nh = 0; nh < nestedHasMany.length; nh++) {
-                        cObj[nestedHasMany[nh].childSheet] = nestedHasMany[nh].groupedByParentId[cIdStr] || [];
-                    }
-                }
-
-                var pStr = String(fkVal);
-                if (!grouped[pStr]) grouped[pStr] = [];
-                grouped[pStr].push(cObj);
+                if (!matchesRelationConstraints(cObj, relDesc.constraints)) continue;
+                applyModelRowFormat(childSheetName, cObj, false);
+                targetById[String(cRow[relKeyIdx])] = cObj;
             }
 
-            configs.push({
-                childSheet: cSheet,
-                groupedByParentId: grouped
+            for (var pr = 1; pr < pivotRows.length; pr++) {
+                var pRow = pivotRows[pr];
+                var pParentId = String(pRow[fPivotIdx] || "");
+                var pChildId = String(pRow[rPivotIdx] || "");
+                if (!pParentId || !targetById[pChildId]) continue;
+
+                var clonedChild = Object.assign({}, targetById[pChildId]);
+                if (Array.isArray(relDesc.pivotColumns) && relDesc.pivotColumns.length > 0) {
+                    var pivotData = {};
+                    for (var pc = 0; pc < relDesc.pivotColumns.length; pc++) {
+                        var pColName = relDesc.pivotColumns[pc];
+                        var pColIdx = pivotHeaders.indexOf(pColName);
+                        if (pColIdx !== -1) pivotData[pColName] = pRow[pColIdx];
+                    }
+                    clonedChild.pivot = pivotData;
+                }
+                if (!childGroupMap[pParentId]) childGroupMap[pParentId] = [];
+                childGroupMap[pParentId].push(clonedChild);
+            }
+        } else {
+            var fkIndex = childHeaders.indexOf(relDesc.foreignKey);
+            if (fkIndex === -1) return null;
+
+            for (var hr = 1; hr < childRows.length; hr++) {
+                var hRow = childRows[hr];
+                if (!includeDeleted && deletedIndex !== -1 && hRow[deletedIndex] !== "") continue;
+
+                var fkValue = hRow[fkIndex];
+                if (fkValue === null || fkValue === undefined || fkValue === "") continue;
+
+                var hObj = {};
+                for (var hh = 0; hh < childHeaders.length; hh++) {
+                    hObj[childHeaders[hh]] = hRow[hh];
+                }
+                if (!matchesRelationConstraints(hObj, relDesc.constraints)) continue;
+                applyModelRowFormat(childSheetName, hObj, false);
+
+                var fkStr = String(fkValue);
+                if (!childGroupMap[fkStr]) childGroupMap[fkStr] = [];
+                childGroupMap[fkStr].push(hObj);
+            }
+        }
+
+        var hasDisplayOrder = childHeaders.indexOf("display_order") !== -1;
+        var sortCol = relDesc.orderByCol || (hasDisplayOrder ? "display_order" : "id");
+        var sortDirStr = relDesc.orderByCol
+            ? (relDesc.orderByDir || "DESC")
+            : (hasDisplayOrder ? "ASC" : "DESC");
+
+        Object.keys(childGroupMap).forEach(function (gKey) {
+            childGroupMap[gKey].sort(function (a, b) {
+                return compareSortValues(a[sortCol], b[sortCol], sortDirStr);
+            });
+        });
+
+        var childSingleRels = getAllSingleRelationsForSheet(childSheetName);
+        for (var csr = 0; csr < childSingleRels.length; csr++) {
+            var csRel = childSingleRels[csr];
+            var csPath = currentPath + "." + csRel.name;
+            if (allowedPathsMap && !allowedPathsMap[csPath]) continue;
+
+            var csMap = buildSingleRelationMap(csRel, depth + 1, csPath, allowedPathsMap);
+            if (!csMap) continue;
+
+            var csParentKey = csRel.type === "hasOne" ? (csRel.localKey || "id") : csRel.foreignKey;
+            Object.keys(childGroupMap).forEach(function (gKey) {
+                childGroupMap[gKey].forEach(function (childItem) {
+                    var cFk = childItem[csParentKey];
+                    var cFkStr = (cFk !== null && cFk !== undefined) ? String(cFk) : "";
+                    childItem[csRel.name] = csMap[cFkStr] || null;
+                });
             });
         }
 
-        return configs;
+        var nestedCollections = getAllCollectionRelationsForSheet(childSheetName);
+        for (var nc = 0; nc < nestedCollections.length; nc++) {
+            var nColRel = nestedCollections[nc];
+            var nColPath = currentPath + "." + nColRel.name;
+            if (allowedPathsMap && !allowedPathsMap[nColPath]) continue;
+
+            var nColMap = buildCollectionLookupMap(nColRel, nColPath, depth + 1, allowedPathsMap);
+            if (!nColMap) continue;
+
+            var nParentKey = nColRel.localKey || nColRel.parentKey || "id";
+            Object.keys(childGroupMap).forEach(function (gKey) {
+                childGroupMap[gKey].forEach(function (childItem) {
+                    var cKeyVal = (childItem[nParentKey] !== null && childItem[nParentKey] !== undefined)
+                        ? String(childItem[nParentKey])
+                        : "";
+                    childItem[nColRel.name] = nColMap[cKeyVal] || [];
+                });
+            });
+        }
+
+        return childGroupMap;
     }
 
     function isNestedValueMatch(val, query, depth) {
@@ -1075,9 +1335,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         }
         var keys = Object.keys(val);
         for (var k = 0; k < keys.length; k++) {
-            var key = keys[k];
-            if (key === "password" || key === "deleted_at") continue;
-            if (isNestedValueMatch(val[key], query, depth + 1)) return true;
+            if (isNestedValueMatch(val[keys[k]], query, depth + 1)) return true;
         }
         return false;
     }
@@ -1085,24 +1343,40 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
     var useAutoEarlyRelations = useNestedWithGlobalSearch && withConfig.mode === "auto";
     var earlyAllowedMap = useAutoEarlyRelations ? null : earlyNeededPaths;
 
-    var earlyBelongsToConfigs = [];
-    for (var eb = 0; eb < sheetMeta.belongsTo.length; eb++) {
-        var bRel = sheetMeta.belongsTo[eb];
-        if (useAutoEarlyRelations || earlyNeededPaths[bRel.propName]) {
-            var eMap = buildBelongsToMap(bRel.targetSheet, 1, bRel.propName, earlyAllowedMap);
-            if (eMap) {
-                earlyBelongsToConfigs.push({
-                    colIndex: bRel.colIndex,
-                    propName: bRel.propName,
-                    lookupMap: eMap
+    var earlySingleConfigs = [];
+    for (var es = 0; es < allSingleRels.length; es++) {
+        var sRel = allSingleRels[es];
+        if (useAutoEarlyRelations || earlyNeededPaths[sRel.name]) {
+            var sMap = buildSingleRelationMap(sRel, 1, sRel.name, earlyAllowedMap);
+            if (sMap) {
+                var sourceCol = sRel.type === "hasOne" ? (sRel.localKey || "id") : sRel.foreignKey;
+                earlySingleConfigs.push({
+                    colIndex: colMap.hasOwnProperty(sourceCol) ? colMap[sourceCol] : -1,
+                    propName: sRel.name,
+                    lookupMap: sMap
                 });
             }
         }
     }
 
-    var earlyHasManyConfigs = useNestedWithGlobalSearch
-        ? buildEarlyHasManyConfigs(sheet_name, "", 1, earlyAllowedMap)
-        : [];
+    var earlyCollectionConfigs = [];
+    if (useNestedWithGlobalSearch) {
+        var allColRels = getAllCollectionRelationsForSheet(sheet_name);
+        for (var ec = 0; ec < allColRels.length; ec++) {
+            var cRelDesc = allColRels[ec];
+            if (useAutoEarlyRelations || earlyNeededPaths[cRelDesc.name]) {
+                var cGroupMap = buildCollectionLookupMap(cRelDesc, cRelDesc.name, 1, earlyAllowedMap);
+                if (cGroupMap) {
+                    var parentKeyCol = cRelDesc.localKey || cRelDesc.parentKey || "id";
+                    earlyCollectionConfigs.push({
+                        propName: cRelDesc.name,
+                        colIndex: colMap.hasOwnProperty(parentKeyCol) ? colMap[parentKeyCol] : -1,
+                        groupedByParentId: cGroupMap
+                    });
+                }
+            }
+        }
+    }
 
     var rowIndex = getRowIndex(sheet_name);
     var recordsTotal = onlyTrashed
@@ -1143,7 +1417,6 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
     var data = [];
     var deletedAtIndex = colMap.hasOwnProperty("deleted_at") ? colMap["deleted_at"] : -1;
-    var idColIndex = colMap.hasOwnProperty("id") ? colMap["id"] : -1;
     var scanLength = candidateArrayIndices !== null ? candidateArrayIndices.length : (rows.length - 1);
 
     for (var idx = 0; idx < scanLength; idx++) {
@@ -1175,15 +1448,16 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
             if (!globalMatch) {
                 if (relationSearchColumns.length > 0) {
                     for (var rs = 0; rs < relationSearchColumns.length; rs++) {
-                        var relVal = getRelationValueFromConfig(earlyBelongsToConfigs, row, relationSearchColumns[rs]);
+                        var relVal = getRelationValueFromConfig(earlySingleConfigs, row, relationSearchColumns[rs]);
                         if (isNestedValueMatch(relVal, globalSearch, 0)) {
                             globalMatch = true;
                             break;
                         }
                     }
                 } else {
-                    for (var ebs = 0; ebs < earlyBelongsToConfigs.length; ebs++) {
-                        var ebCfgSearch = earlyBelongsToConfigs[ebs];
+                    for (var ebs = 0; ebs < earlySingleConfigs.length; ebs++) {
+                        var ebCfgSearch = earlySingleConfigs[ebs];
+                        if (ebCfgSearch.colIndex === -1) continue;
                         var ebFkSearch = row[ebCfgSearch.colIndex];
                         var ebStrSearch = (ebFkSearch !== null && ebFkSearch !== undefined) ? String(ebFkSearch) : "";
                         var relObjSearch = ebCfgSearch.lookupMap[ebStrSearch];
@@ -1193,12 +1467,13 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
                         }
                     }
 
-                    if (!globalMatch && earlyHasManyConfigs.length > 0 && idColIndex !== -1) {
-                        var parentIdVal = row[idColIndex];
-                        if (parentIdVal !== null && parentIdVal !== undefined && parentIdVal !== "") {
-                            var parentIdStr = String(parentIdVal);
-                            for (var ehs = 0; ehs < earlyHasManyConfigs.length; ehs++) {
-                                var childList = earlyHasManyConfigs[ehs].groupedByParentId[parentIdStr];
+                    if (!globalMatch && earlyCollectionConfigs.length > 0) {
+                        for (var ehs = 0; ehs < earlyCollectionConfigs.length; ehs++) {
+                            var ecCfg = earlyCollectionConfigs[ehs];
+                            if (ecCfg.colIndex === -1) continue;
+                            var parentKeyVal = row[ecCfg.colIndex];
+                            if (parentKeyVal !== null && parentKeyVal !== undefined && parentKeyVal !== "") {
+                                var childList = ecCfg.groupedByParentId[String(parentKeyVal)];
                                 if (childList && isNestedValueMatch(childList, globalSearch, 0)) {
                                     globalMatch = true;
                                     break;
@@ -1215,7 +1490,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
             for (var csIdx = 0; csIdx < columnSearches.length; csIdx++) {
                 var sCfg = columnSearches[csIdx];
                 var sVal = sCfg.column.indexOf(".") !== -1
-                    ? getRelationValueFromConfig(earlyBelongsToConfigs, row, sCfg.column)
+                    ? getRelationValueFromConfig(earlySingleConfigs, row, sCfg.column)
                     : (colMap.hasOwnProperty(sCfg.column) ? row[colMap[sCfg.column]] : null);
 
                 if (!isSearchMatch(sVal, sCfg.value)) {
@@ -1228,7 +1503,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         if (isMatch && Object.keys(customFilters).length > 0) {
             for (var fltKey in customFilters) {
                 var cellValue = fltKey.indexOf(".") !== -1
-                    ? getRelationValueFromConfig(earlyBelongsToConfigs, row, fltKey)
+                    ? getRelationValueFromConfig(earlySingleConfigs, row, fltKey)
                     : (colMap.hasOwnProperty(fltKey) ? row[colMap[fltKey]] : undefined);
 
                 if (cellValue === undefined) {
@@ -1288,48 +1563,18 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
         var obj = {};
         for (var j = 0; j < headers.length; j++) {
-            var hKey = headers[j];
-            if (hKey === "password" && !withPassword) continue;
-            if (hKey === "deleted_at" && !includeDeleted) continue;
-            obj[hKey] = row[j];
+            obj[headers[j]] = row[j];
         }
 
-        for (var ebc = 0; ebc < earlyBelongsToConfigs.length; ebc++) {
-            var ebCfg = earlyBelongsToConfigs[ebc];
+        for (var ebc = 0; ebc < earlySingleConfigs.length; ebc++) {
+            var ebCfg = earlySingleConfigs[ebc];
+            if (ebCfg.colIndex === -1) continue;
             var ebFkVal = row[ebCfg.colIndex];
             var ebFkStr = (ebFkVal !== null && ebFkVal !== undefined) ? String(ebFkVal) : "";
             obj[ebCfg.propName] = ebCfg.lookupMap[ebFkStr] || null;
         }
 
         data.push(obj);
-    }
-
-    function compareSortValues(a, b, direction) {
-        var multiplier = direction === "DESC" ? -1 : 1;
-        if (a === null || a === undefined || a === "") {
-            return (b === null || b === undefined || b === "") ? 0 : 1;
-        }
-        if (b === null || b === undefined || b === "") return -1;
-
-        var strA = String(a).trim();
-        var strB = String(b).trim();
-        var numericPattern = /^-?\d+(?:\.\d+)?$/;
-
-        if (numericPattern.test(strA) && numericPattern.test(strB)) {
-            var numA = Number(strA);
-            var numB = Number(strB);
-            return numA < numB ? -1 * multiplier : (numA > numB ? 1 * multiplier : 0);
-        }
-
-        var dateA = parseDateValue(a);
-        var dateB = parseDateValue(b);
-        if (dateA !== null && dateB !== null) {
-            return dateA < dateB ? -1 * multiplier : (dateA > dateB ? 1 * multiplier : 0);
-        }
-
-        strA = strA.toLowerCase();
-        strB = strB.toLowerCase();
-        return strA < strB ? -1 * multiplier : (strA > strB ? 1 * multiplier : 0);
     }
 
     if (data.length > 1) {
@@ -1414,11 +1659,11 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
         var allowedPaths = withConfig.mode === "selective" ? withConfig.allowed : null;
 
-        if (earlyBelongsToConfigs.length > 0) {
+        if (earlySingleConfigs.length > 0) {
             for (var trClean = 0; trClean < targetRecords.length; trClean++) {
                 var recClean = targetRecords[trClean];
-                for (var eClean = 0; eClean < earlyBelongsToConfigs.length; eClean++) {
-                    var pName = earlyBelongsToConfigs[eClean].propName;
+                for (var eClean = 0; eClean < earlySingleConfigs.length; eClean++) {
+                    var pName = earlySingleConfigs[eClean].propName;
                     if (withConfig.mode === "none" || (allowedPaths && !allowedPaths[pName])) {
                         delete recClean[pName];
                     }
@@ -1427,98 +1672,46 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         }
 
         if (withConfig.mode !== "none") {
-            for (var lb = 0; lb < sheetMeta.belongsTo.length; lb++) {
-                var lateRel = sheetMeta.belongsTo[lb];
-                if (allowedPaths && !allowedPaths[lateRel.propName]) continue;
+            for (var lb = 0; lb < allSingleRels.length; lb++) {
+                var lateRel = allSingleRels[lb];
+                if (allowedPaths && !allowedPaths[lateRel.name]) continue;
 
-                var lateMap = buildBelongsToMap(lateRel.targetSheet, 1, lateRel.propName, allowedPaths);
+                var lateMap = buildSingleRelationMap(lateRel, 1, lateRel.name, allowedPaths);
                 if (!lateMap) continue;
+
+                var parentKeyCol = lateRel.type === "hasOne"
+                    ? (lateRel.localKey || "id")
+                    : lateRel.foreignKey;
 
                 for (var tr = 0; tr < targetRecords.length; tr++) {
                     var rec = targetRecords[tr];
-                    var fkRaw = rec[lateRel.colName];
+                    var fkRaw = rec[parentKeyCol];
                     var fkStr = (fkRaw !== null && fkRaw !== undefined) ? String(fkRaw) : "";
-                    rec[lateRel.propName] = lateMap[fkStr] || null;
+                    rec[lateRel.name] = lateMap[fkStr] || null;
                 }
             }
 
-            function hydrateHasManySelective(records, parentSheetName, currentPath, depth, maxDepth) {
-                if (!records || records.length === 0 || depth > maxDepth) return;
+            var collectionRels = getAllCollectionRelationsForSheet(sheet_name);
+            for (var crIdx = 0; crIdx < collectionRels.length; crIdx++) {
+                var childRel = collectionRels[crIdx];
+                if (allowedPaths && !allowedPaths[childRel.name]) continue;
 
-                var childRelations = schema.hasManyMap[parentSheetName] || [];
-                if (childRelations.length === 0) return;
+                var colLookup = buildCollectionLookupMap(childRel, childRel.name, 1, allowedPaths);
+                if (!colLookup) continue;
 
-                for (var crIdx = 0; crIdx < childRelations.length; crIdx++) {
-                    var childRel = childRelations[crIdx];
-                    var childSheetName = childRel.childSheet;
-                    var nextPath = currentPath ? (currentPath + "." + childSheetName) : childSheetName;
-
-                    if (allowedPaths && !allowedPaths[nextPath]) {
-                        continue;
-                    }
-
-                    var childRows = sheetRowsCached(childSheetName);
-                    if (!childRows || childRows.length < 2) continue;
-
-                    var childHeaders = childRows[0];
-                    var fkIndex = childRel.fkIndex;
-                    var deletedIndex = childHeaders.indexOf("deleted_at");
-                    var childGroupMap = {};
-
-                    for (var cr = 1; cr < childRows.length; cr++) {
-                        var cRow = childRows[cr];
-                        if (
-                            !includeDeleted &&
-                            deletedIndex !== -1 &&
-                            cRow[deletedIndex] !== "" &&
-                            cRow[deletedIndex] !== null &&
-                            cRow[deletedIndex] !== undefined
-                        ) continue;
-
-                        var fkValue = cRow[fkIndex];
-                        if (fkValue === null || fkValue === undefined || fkValue === "") continue;
-
-                        var fkStr = String(fkValue);
-                        var cObj = {};
-                        for (var ch = 0; ch < childHeaders.length; ch++) {
-                            var cKey = childHeaders[ch];
-                            if (cKey === "password" || (cKey === "deleted_at" && !includeDeleted)) continue;
-                            cObj[cKey] = cRow[ch];
-                        }
-
-                        if (!childGroupMap[fkStr]) childGroupMap[fkStr] = [];
-                        childGroupMap[fkStr].push(cObj);
-                    }
-
-                    var hasDisplayOrder = childHeaders.indexOf("display_order") !== -1;
-                    var sortCol = hasDisplayOrder ? "display_order" : "id";
-                    var sortDirNum = hasDisplayOrder ? 1 : -1;
-
-                    Object.keys(childGroupMap).forEach(function (gKey) {
-                        childGroupMap[gKey].sort(function (a, b) {
-                            return compareSortValues(a[sortCol], b[sortCol], sortDirNum === 1 ? "ASC" : "DESC");
-                        });
-                    });
-
-                    var nestedBatch = [];
-                    for (var p = 0; p < records.length; p++) {
-                        var parent = records[p];
-                        var pKey = (parent.id !== null && parent.id !== undefined) ? String(parent.id) : "";
-                        var attached = childGroupMap[pKey] || [];
-                        parent[childSheetName] = attached;
-
-                        for (var a = 0; a < attached.length; a++) {
-                            nestedBatch.push(attached[a]);
-                        }
-                    }
-
-                    if (nestedBatch.length > 0) {
-                        hydrateHasManySelective(nestedBatch, childSheetName, nextPath, depth + 1, maxDepth);
-                    }
+                var parentLocalKey = childRel.localKey || childRel.parentKey || "id";
+                for (var p = 0; p < targetRecords.length; p++) {
+                    var parent = targetRecords[p];
+                    var pKey = (parent[parentLocalKey] !== null && parent[parentLocalKey] !== undefined)
+                        ? String(parent[parentLocalKey])
+                        : "";
+                    parent[childRel.name] = colLookup[pKey] || [];
                 }
             }
+        }
 
-            hydrateHasManySelective(targetRecords, sheet_name, "", 1, MAX_DEPTH);
+        for (var fmt = 0; fmt < targetRecords.length; fmt++) {
+            applyModelRowFormat(sheet_name, targetRecords[fmt], rowFormatOpts);
         }
     }
 
@@ -1538,6 +1731,8 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 }
 
 function update(sheet_name, payload) {
+    ensureModelResolved(sheet_name);
+
     if (!payload || payload.data === undefined) {
         return { status: false, message: "Invalid payload format." };
     }
@@ -1553,7 +1748,7 @@ function update(sheet_name, payload) {
         var sheetMeta = schema.sheets[sheet_name] || getSchemaMetadata(true).sheets[sheet_name];
         var headers = sheetMeta.headers;
         var colMap = sheetMeta.colMap;
-        var data = payload.data;
+        var data = prepareModelInputData(sheet_name, payload.data);
 
         if (!colMap.hasOwnProperty("id")) {
             return { status: false, message: "Column 'id' not found." };
@@ -1625,6 +1820,8 @@ function update(sheet_name, payload) {
 }
 
 function destroy(sheet_name, id) {
+    ensureModelResolved(sheet_name);
+
     return _withScriptLock(function () {
         var getSheet = sheet().getSheetByName(sheet_name);
         if (!getSheet) return { status: false, message: "Sheet does not exist." };
@@ -1673,6 +1870,8 @@ function destroy(sheet_name, id) {
 }
 
 function restore(sheet_name, id) {
+    ensureModelResolved(sheet_name);
+
     return _withScriptLock(function () {
         var getSheet = sheet().getSheetByName(sheet_name);
         if (!getSheet) return { status: false, message: "Sheet does not exist." };
@@ -1722,6 +1921,8 @@ function restore(sheet_name, id) {
 }
 
 function forceDelete(sheet_name, id) {
+    ensureModelResolved(sheet_name);
+
     return _withScriptLock(function () {
         var getSheet = sheet().getSheetByName(sheet_name);
         if (!getSheet) return { status: false, message: "Sheet does not exist." };
