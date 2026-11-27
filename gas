@@ -13,8 +13,22 @@ const { DB_FILE } = require("./local/runtime/GasMocks");
 const { loadLocalEnv } = require("./local/runtime/EnvLoader");
 
 const [, , command, ...rawArgs] = process.argv;
-const flags = rawArgs.filter((a) => a.startsWith("-"));
-const positionalArgs = rawArgs.filter((a) => !a.startsWith("-"));
+const VALUE_FLAGS = new Set(["--id", "--method", "--remote", "--branch", "--repo", "--class"]);
+const flags = [];
+const positionalArgs = [];
+
+for (let i = 0; i < rawArgs.length; i++) {
+    const token = rawArgs[i];
+    if (token.startsWith("-")) {
+        flags.push(token);
+        if (VALUE_FLAGS.has(token) && rawArgs[i + 1] && !rawArgs[i + 1].startsWith("-")) {
+            i++;
+        }
+    } else {
+        positionalArgs.push(token);
+    }
+}
+
 const arg1 = positionalArgs[0];
 
 const ROOT_DIR = __dirname;
@@ -34,6 +48,7 @@ const DEFAULT_FILE_PUSH_ORDER = [
     "src/core/Core_Router.js",
     "src/core/Database_Migration.js",
     "src/core/Database_Seeder.js",
+    "src/core/Model_Base.js",
     "src/core/Controller_Base.js",
     "src/middleware/middleware.js",
     "src/core/env_sync.js"
@@ -68,6 +83,17 @@ function timestamp() {
     return `${d.getFullYear()}_${pad(d.getMonth() + 1)}_${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
+function hasFlag(...names) {
+    return names.some((name) => {
+        if (flags.includes(name)) return true;
+        if (/^-[a-zA-Z]$/.test(name)) {
+            const shortChar = name.slice(1);
+            return flags.some((f) => /^-[a-zA-Z]{2,}$/.test(f) && f.includes(shortChar));
+        }
+        return false;
+    });
+}
+
 function getFlagValue(flagName) {
     const idx = rawArgs.indexOf(flagName);
     if (idx !== -1 && rawArgs[idx + 1] && !rawArgs[idx + 1].startsWith("-")) {
@@ -96,6 +122,47 @@ function resolveControllerMode(defaultMode = "--web") {
     }
 
     return defaultMode;
+}
+
+function printHelp() {
+    console.log(`
+Asal-GAS CLI:
+  gas init [Title] [--id <ScriptId>] [-f]                         # Create a new GAS project (or link ID) & setup .clasp.json
+  gas login                                                       # Authenticate Google account via clasp
+  gas creds [-f|--force]                                          # Setup creds.json & authenticate clasp for remote execution
+  gas key:generate [-f|--force]                                   # Generate APP_KEY in .env/.clasp.json & sync to Script Properties
+  gas push [-f|--force] [--seed] [--setup]                        # Compile views, prompt APP_KEY (first run), push & sync GAS
+  gas pull                                                        # Pull remote source code from GAS into src/
+  gas status                                                      # Check local vs remote file status
+  gas open                                                        # Open project in Google Apps Script Web Editor
+  gas deploy [Description] [--migrate] [--seed] [--setup]         # Compile views, prompt APP_KEY (first run), push & deploy Web App
+  gas framework:update [--dry-run] [--commit] [--remote <name>] [--branch <branch|tag>] [--repo <url>]
+                                                                  # Merge framework updates & record Git merge history safely
+
+  gas make:module <Entity> [--api|--hybrid|--web]                 # Generate Model + Migration + Seeder + Controller
+  gas make:model <Name> [-m] [-c] [-s] [-r] [-a] [--api|--hybrid|--web]
+                                                                  # Create Model in src/app/Models/ (+ optional scaffolding)
+  gas make:migration <Name>                                       # Create migration in src/database/migrations/
+  gas make:controller <Name> [--web|--api|--hybrid]               # Create Web, API Resource, or Hybrid controller
+  gas make:seeder <Name>                                          # Create seeder in src/database/seeders/
+  gas make:view <Name>                                            # Create Blade-lite .gas.js view in src/resources/views/
+  gas view:compile                                                # Compile src/resources/views/**/*.gas.js for GAS push
+
+  gas migrate [--seed] [--no-count]                               # Run pending migrations locally
+  gas migrate:fresh [--seed] [--no-count]                         # Reset local db.json & re-run all migrations
+  gas migrate:rollback                                            # Roll back the last migration batch
+  gas migrate:status                                              # Display migration status
+  gas migrate:remote [--seed] [--no-count]                        # Run pending migrations (+ optional seeder) on remote GAS
+  gas migrate:remote:rollback                                     # Roll back the last migration batch on remote GAS
+  gas migrate:remote:refresh [--seed] [--no-count]                # Roll back and re-run remote migrations (+ optional seeder)
+
+  gas db:seed [Seeder] [--remote] [--no-count]                    # Run DatabaseSeeder (or specific seeder) locally or on remote GAS
+  gas db:seed:remote [Seeder] [--no-count]                        # Run DatabaseSeeder (or specific seeder) on remote GAS
+  gas db:reindex                                                  # Rebuild local schema metadata and row indexes
+
+  gas route:list [Filter] [--method <HTTP>]                       # List registered Web & API routes and middlewares
+  gas --h | -h | --help                                           # Display this help message
+`);
 }
 
 function runClaspCommand(claspCmd) {
@@ -1093,7 +1160,6 @@ async function ensureAppKeyOnFirstDeploy(cfg, remoteInfo = null) {
         String(localEnv.APP_KEY || "").trim() ||
         readEnvAppKey(envPath);
 
-    // Sudah terdaftar: langsung lewati tanpa prompt maupun overwrite
     if (existingKey) {
         if (!cfg.appKey) {
             cfg.appKey = existingKey;
@@ -1310,6 +1376,53 @@ function writeSrcFile(relPath, content) {
     console.log(`[CREATED] src/${relPath}`);
 }
 
+function normalizeEntityName(rawName) {
+    const pascal = toPascalCase(rawName);
+    const stripped = pascal.replace(/(Controller|Seeder|Model)$/, "");
+    return stripped || pascal;
+}
+
+function createModel(rawName) {
+    const modelName = normalizeEntityName(rawName);
+    const tableName = pluralizeSnake(toSnakeCase(modelName));
+    const content = `class ${modelName} extends Model {
+    // table = "${tableName}";
+    // primaryKey = "id";
+    // timestamps = true;
+    // softDeletes = true;
+
+    // Define either fillable or guarded (required for mass-assignment):
+    fillable = [
+        "name",
+    ];
+
+    // guarded = [
+    //     "id",
+    // ];
+
+    // Optional output redaction (independent of fillable/guarded):
+    hidden = [
+        "deleted_at",
+    ];
+
+    casts = {
+        // is_active: "boolean",
+        // metadata: "json",
+    };
+
+    // parent() {
+    //     return this.belongsTo(ParentModel);
+    // }
+
+    // items() {
+    //     return this.hasMany(ItemModel);
+    // }
+}
+`;
+    writeSrcFile(`app/Models/${modelName}.js`, content);
+    return modelName;
+}
+
 function createMigration(rawName) {
     const pascalName = toPascalCase(rawName);
     const snakeName = toSnakeCase(pascalName);
@@ -1409,81 +1522,61 @@ function createController(rawName, modeFlag) {
     const sheetName = pluralizeSnake(snakeBase);
     const viewName = snakeBase;
     const mode = String(modeFlag || "--web").toLowerCase();
+    const modelExists = fs.existsSync(path.join(SRC_DIR, "app", "Models", `${baseName}.js`));
+    const sourceLine = modelExists ? `    model = ${baseName};` : `    sheet = "${sheetName}";`;
 
-    let innerBody = "";
+    let content = "";
 
     if (mode === "--api" || mode === "--resource" || mode === "-r") {
-        innerBody = `                    sheet: "${sheetName}",
-                    with: [],
-
-                    // Lifecycle hooks: beforeStore, afterStore, beforeUpdate, afterUpdate, beforeDestroy, afterDestroy
-                    // beforeStore: function (ctx) {
-                    //     return { status: true };
-                    // },
-
-                    // Override resource methods: index, store, update, destroy, restore, forceDelete
-                    // index: function (ctx) {
-                    //     return this.superIndex(ctx);
-                    // }`;
+        content = `class ${className} extends Controller {
+${sourceLine}
+    with = [];
+}
+`;
     } else if (mode === "--hybrid") {
-        innerBody = `                    sheet: "${sheetName}",
-                    with: [],
+        content = `class ${className} extends Controller {
+${sourceLine}
+    with = [];
 
-                    index: function (ctx) {
-                        var res = this.superIndex(ctx);
-                        if (ctx.wantsJson()) return res;
+    index(ctx) {
+        const res = super.index(ctx);
+        if (ctx.wantsJson()) return res;
 
-                        return view("${viewName}.index", {
-                            items: res.data || [],
-                            meta: res.meta || null
-                        });
-                    },
-
-                    show: function (ctx) {
-                        var id = ctx.routeParams.id || ctx.params.id;
-                        var res = read(this.sheet, { id: id }, 1, 1);
-                        var item = (res.data && res.data[0]) ? res.data[0] : null;
-
-                        if (!item) {
-                            return failResponse("${baseName} not found.", 404);
-                        }
-
-                        return this.respond(ctx, "${viewName}.show", { item: item });
-                    }`;
-    } else {
-        innerBody = `                    index: function (ctx) {
-                        return view("${viewName}", {
-                            title: "${baseName}"
-                        });
-                    }
-
-                    // Example: otomatis merender view di Web dan JSON di API
-                    // show: function (ctx) {
-                    //     return this.respond(ctx, "${viewName}.show", { id: ctx.routeParams.id });
-                    // }`;
+        return view("${viewName}.index", {
+            items: res.data || [],
+            meta: res.meta || null
+        });
     }
 
-    const content = `var ${className} = (function () {
-    var _instance;
-    return new Proxy({}, {
-        get: function (_, prop) {
-            if (!_instance) {
-                _instance = BaseController.init({
-${innerBody}
-                });
-            }
-            var val = _instance[prop];
-            return typeof val === "function" ? val.bind(_instance) : val;
+    show(ctx) {
+        const res = super.show(ctx);
+        if (ctx.wantsJson()) return res;
+        if (!res.status) {
+            return failResponse(res.message || "${baseName} not found.", res.code || 404);
         }
-    });
-})();
+
+        return view("${viewName}.show", {
+            item: res.data
+        });
+    }
+}
 `;
+    } else {
+        content = `class ${className} extends Controller {
+    index(ctx) {
+        return view("${viewName}", {
+            title: "${baseName}"
+        });
+    }
+}
+`;
+    }
 
     writeSrcFile(`app/Controllers/${className}.js`, content);
 }
 
 function createSeeder(rawName) {
-    const entity = toPascalCase(rawName).replace(/Seeder$/, "");
+    const entity = normalizeEntityName(rawName);
     const tableName = pluralizeSnake(toSnakeCase(entity));
     const seederName = `${entity}Seeder`;
 
@@ -1682,31 +1775,266 @@ function checkoutFilesFromRef(ref, fileList) {
             process.exit(res.status || 1);
         }
     }
+    if (process.platform !== "win32" && fileList.includes("gas")) {
+        try {
+            fs.chmodSync(path.join(ROOT_DIR, "gas"), 0o755);
+        } catch (_) { }
+    }
 }
 
-function syncClaspPushOrderAfterUpdate() {
+function readGitTextFile(ref, relPath) {
+    const res = spawnSync("git", ["show", `${ref}:${relPath}`], {
+        cwd: ROOT_DIR,
+        encoding: "utf8"
+    });
+    if (res.status !== 0) return null;
+    return String(res.stdout || "");
+}
+
+function readGitJsonFile(ref, relPath) {
+    const raw = readGitTextFile(ref, relPath);
+    if (!raw) return null;
+    try {
+        return JSON.parse(raw);
+    } catch (_) {
+        return null;
+    }
+}
+
+function gitRefExists(ref) {
+    const res = spawnSync("git", ["rev-parse", "--verify", "--quiet", ref], {
+        cwd: ROOT_DIR,
+        encoding: "utf8"
+    });
+    return res.status === 0;
+}
+
+function gitPathExistsInHead(relPath) {
+    const res = spawnSync("git", ["cat-file", "-e", `HEAD:${relPath}`], {
+        cwd: ROOT_DIR,
+        stdio: "ignore"
+    });
+    return res.status === 0;
+}
+
+function gitIsIgnored(relPath) {
+    const res = spawnSync("git", ["check-ignore", "-q", relPath], {
+        cwd: ROOT_DIR,
+        stdio: "ignore"
+    });
+    return res.status === 0;
+}
+
+function resolveRemoteSourceRef(remoteName, branchOrTag, repoUrl, skipFetch = false) {
+    const remotesRaw = execSync("git remote", { cwd: ROOT_DIR, encoding: "utf8" });
+    const remotes = remotesRaw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+
+    if (!remotes.includes(remoteName)) {
+        console.log(`➕ Adding remote '${remoteName}' -> ${repoUrl}`);
+        execSync(`git remote add ${remoteName} ${repoUrl}`, { cwd: ROOT_DIR, stdio: "inherit" });
+    } else if (getFlagValue("--repo")) {
+        execSync(`git remote set-url ${remoteName} ${repoUrl}`, { cwd: ROOT_DIR, stdio: "inherit" });
+    }
+
+    const remoteBranchRef = `refs/remotes/${remoteName}/${branchOrTag}`;
+    const localTagRef = `refs/tags/${branchOrTag}`;
+
+    if (!skipFetch) {
+        console.log(`🔄 Fetching '${branchOrTag}' from ${remoteName}...`);
+        const branchFetch = spawnSync(
+            "git",
+            ["fetch", "--tags", remoteName, `+refs/heads/${branchOrTag}:${remoteBranchRef}`],
+            { cwd: ROOT_DIR, stdio: "pipe", encoding: "utf8" }
+        );
+
+        if (branchFetch.status === 0) {
+            return `${remoteName}/${branchOrTag}`;
+        }
+
+        const tagFetch = spawnSync(
+            "git",
+            ["fetch", remoteName, `+refs/tags/${branchOrTag}:${localTagRef}`],
+            { cwd: ROOT_DIR, stdio: "pipe", encoding: "utf8" }
+        );
+
+        if (tagFetch.status === 0) {
+            return localTagRef;
+        }
+
+        console.error(`❌ Branch or tag '${branchOrTag}' not found on remote '${remoteName}' (${repoUrl}).`);
+        process.exit(1);
+    }
+
+    if (gitRefExists(remoteBranchRef)) return `${remoteName}/${branchOrTag}`;
+    if (gitRefExists(localTagRef)) return localTagRef;
+    return `${remoteName}/${branchOrTag}`;
+}
+
+function restorePathsToHead(paths) {
+    const uniquePaths = Array.from(new Set(paths)).filter(Boolean);
+    if (uniquePaths.length === 0) return;
+
+    const existingInHead = [];
+    const newFromUpstream = [];
+
+    for (const relPath of uniquePaths) {
+        if (gitPathExistsInHead(relPath)) {
+            existingInHead.push(relPath);
+        } else {
+            newFromUpstream.push(relPath);
+        }
+    }
+
+    const chunkSize = 50;
+    for (let i = 0; i < existingInHead.length; i += chunkSize) {
+        const batch = existingInHead.slice(i, i + chunkSize);
+        spawnSync("git", ["checkout", "HEAD", "--", ...batch], {
+            cwd: ROOT_DIR,
+            stdio: "ignore"
+        });
+    }
+
+    for (let i = 0; i < newFromUpstream.length; i += chunkSize) {
+        const batch = newFromUpstream.slice(i, i + chunkSize);
+        spawnSync("git", ["rm", "-f", "--ignore-unmatch", ...batch], {
+            cwd: ROOT_DIR,
+            stdio: "ignore"
+        });
+    }
+}
+
+function mergeIgnoreFileFromRef(ref, relPath) {
+    const remoteContent = readGitTextFile(ref, relPath);
+    if (remoteContent === null) return;
+
+    const targetPath = path.join(ROOT_DIR, relPath);
+    if (!fs.existsSync(targetPath)) {
+        fs.writeFileSync(targetPath, remoteContent, "utf8");
+        console.log(`➕ Created ${relPath} from ${ref}.`);
+        return;
+    }
+
+    const localContent = fs.readFileSync(targetPath, "utf8");
+    const existingRules = new Set(
+        localContent
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line && !line.startsWith("#"))
+    );
+
+    const newRules = remoteContent
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#") && !existingRules.has(line));
+
+    if (newRules.length === 0) return;
+
+    const normalizedLocal = localContent.replace(/\s*$/, "");
+    const updatedContent = `${normalizedLocal}\n${newRules.join("\n")}\n`;
+    fs.writeFileSync(targetPath, updatedContent, "utf8");
+    console.log(`🔄 Merged ${newRules.length} new rule(s) into ${relPath}: ${newRules.join(", ")}`);
+}
+
+function syncClaspConfigAfterUpdate() {
     if (!fs.existsSync(CLASP_FILE)) return;
     try {
         const cfg = JSON.parse(fs.readFileSync(CLASP_FILE, "utf8"));
+        let changed = false;
+
         const existingOrder = Array.isArray(cfg.filePushOrder) ? cfg.filePushOrder : [];
         const mergedOrder = Array.from(new Set([...DEFAULT_FILE_PUSH_ORDER, ...existingOrder]));
-
         if (JSON.stringify(existingOrder) !== JSON.stringify(mergedOrder)) {
             cfg.filePushOrder = mergedOrder;
+            changed = true;
+        }
+
+        const defaults = {
+            rootDir: "./src",
+            scriptExtensions: [".js", ".gs"],
+            htmlExtensions: [".html"],
+            jsonExtensions: [".json"],
+            skipSubdirectories: false
+        };
+
+        for (const [key, defaultVal] of Object.entries(defaults)) {
+            if (cfg[key] === undefined) {
+                cfg[key] = defaultVal;
+                changed = true;
+            }
+        }
+
+        if (changed) {
             writeClaspConfig(cfg);
-            console.log("🔄 Synced 'filePushOrder' in .clasp.json.");
+            console.log("🔄 Merged configuration & 'filePushOrder' in .clasp.json.");
         }
     } catch (_) { }
 }
 
+function syncPackageVersionFromRef(ref) {
+    const remotePkg = readGitJsonFile(ref, "package.json");
+    const localPkgPath = path.join(ROOT_DIR, "package.json");
+
+    if (!remotePkg || !fs.existsSync(localPkgPath)) {
+        return remotePkg;
+    }
+
+    try {
+        const localPkg = JSON.parse(fs.readFileSync(localPkgPath, "utf8"));
+        if (remotePkg.version && localPkg.version !== remotePkg.version) {
+            const prevVersion = localPkg.version || "(none)";
+            localPkg.version = remotePkg.version;
+            fs.writeFileSync(localPkgPath, JSON.stringify(localPkg, null, 2) + "\n", "utf8");
+            console.log(`🔄 Updated package.json version: ${prevVersion} -> ${remotePkg.version}`);
+
+            const localLockPath = path.join(ROOT_DIR, "package-lock.json");
+            if (fs.existsSync(localLockPath)) {
+                try {
+                    const localLock = JSON.parse(fs.readFileSync(localLockPath, "utf8"));
+                    let lockChanged = false;
+
+                    if (localLock.version !== remotePkg.version) {
+                        localLock.version = remotePkg.version;
+                        lockChanged = true;
+                    }
+                    if (localLock.packages && localLock.packages[""] && localLock.packages[""].version !== remotePkg.version) {
+                        localLock.packages[""].version = remotePkg.version;
+                        lockChanged = true;
+                    }
+
+                    if (lockChanged) {
+                        fs.writeFileSync(localLockPath, JSON.stringify(localLock, null, 2) + "\n", "utf8");
+                        console.log(`🔄 Synced package-lock.json version -> ${remotePkg.version}`);
+                    }
+                } catch (_) { }
+            }
+        }
+    } catch (_) { }
+
+    return remotePkg;
+}
+
 function updateFrameworkFromRemote() {
+    const gitCheck = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+        cwd: ROOT_DIR,
+        encoding: "utf8"
+    });
+    if (gitCheck.status !== 0) {
+        console.error("❌ Current directory is not a Git repository. Run 'git init' first before running 'gas framework:update'.");
+        process.exit(1);
+    }
+
+    if (gitRefExists("MERGE_HEAD")) {
+        console.error("❌ A Git merge is already in progress. Resolve or run 'git merge --abort' before running 'gas framework:update'.");
+        process.exit(1);
+    }
+
     const remoteName = getFlagValue("--remote") || "framework";
     const branch = getFlagValue("--branch") || "main";
     const repoUrl = getFlagValue("--repo") || "https://github.com/aqshalzuhdi/asal-gas.git";
     const dryRun = flags.includes("--dry-run");
+    const autoCommit = flags.includes("--commit");
     const isReexec = flags.includes("--reexec");
 
-    // Folder & file milik project user (tidak pernah ditimpa jika sudah ada)
     const userOwnedPrefixes = [
         "src/app/",
         "src/routes/",
@@ -1727,8 +2055,13 @@ function updateFrameworkFromRemote() {
         "package-lock.json"
     ]);
 
-    // Direktori murni milik framework (file usang di dalamnya otomatis dibersihkan)
+    const mergeManagedFiles = new Set([
+        ".gitignore",
+        ".claspignore"
+    ]);
+
     const managedFrameworkDirs = [
+        "src/config",
         "src/core",
         "src/middleware",
         "src/tools",
@@ -1740,25 +2073,7 @@ function updateFrameworkFromRemote() {
         "src/core/Core_Views_Compiled.js"
     ]);
 
-    const remotesRaw = execSync("git remote", { cwd: ROOT_DIR, encoding: "utf8" });
-    const remotes = remotesRaw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-
-    if (!remotes.includes(remoteName)) {
-        console.log(`➕ Adding remote '${remoteName}' -> ${repoUrl}`);
-        execSync(`git remote add ${remoteName} ${repoUrl}`, { cwd: ROOT_DIR, stdio: "inherit" });
-    } else if (getFlagValue("--repo")) {
-        execSync(`git remote set-url ${remoteName} ${repoUrl}`, { cwd: ROOT_DIR, stdio: "inherit" });
-    }
-
-    if (!isReexec) {
-        console.log(`🔄 Fetching latest changes from ${remoteName}/${branch}...`);
-        execSync(
-            `git fetch --tags ${remoteName} +refs/heads/${branch}:refs/remotes/${remoteName}/${branch}`,
-            { cwd: ROOT_DIR, stdio: "inherit" }
-        );
-    }
-
-    const sourceRef = `${remoteName}/${branch}`;
+    const sourceRef = resolveRemoteSourceRef(remoteName, branch, repoUrl, isReexec);
     const allRemoteFiles = listAllFilesInGitTree(sourceRef);
 
     if (allRemoteFiles.length === 0) {
@@ -1767,42 +2082,116 @@ function updateFrameworkFromRemote() {
     }
 
     const isProtectedPath = (relPath) => {
-        if (userOwnedFiles.has(relPath)) return true;
+        if (userOwnedFiles.has(relPath) || mergeManagedFiles.has(relPath)) return true;
         return userOwnedPrefixes.some((prefix) => relPath.startsWith(prefix));
     };
 
     const filesToSync = allRemoteFiles.filter((relPath) => !isProtectedPath(relPath));
 
     if (!isReexec) {
-        console.log("🛡️  Protected project paths (untouched):");
+        console.log("🛡️  Protected project paths (preserved from HEAD):");
         [...userOwnedPrefixes, ...Array.from(userOwnedFiles)].forEach((p) => console.log(`   - ${p}`));
+        console.log("🔀 Smart-merged files:");
+        console.log("   - .gitignore, .claspignore (append missing rules)");
+        console.log("   - .clasp.json (merge filePushOrder & defaults)");
+        console.log("   - package.json & package-lock.json (sync version field)");
         console.log(`📦 Discovered ${filesToSync.length} framework file(s) from ${sourceRef}.`);
     }
 
     if (dryRun) {
         filesToSync.forEach((f) => console.log(`   - ${f}`));
-        console.log("\nℹ️  Dry run selesai. Tidak ada file yang diubah.");
+        console.log("\nℹ️  Dry run completed. No files were modified.");
         return;
     }
 
-    // 1. Update CLI + local/runtime terlebih dahulu lalu re-exec agar versi terbaru yang mengeksekusi sisa proses
     if (!isReexec) {
-        const bootstrapFiles = filesToSync.filter(
-            (f) => f === "gas" || f === "gas.cmd" || f.startsWith("local/runtime/")
-        );
-        if (bootstrapFiles.length > 0) {
-            checkoutFilesFromRef(sourceRef, bootstrapFiles);
-            const forwardedArgs = rawArgs.filter((a) => a !== "--reexec");
-            const reexecRes = spawnSync(
-                process.execPath,
-                [__filename, "framework:update", "--reexec", ...forwardedArgs],
-                { cwd: ROOT_DIR, stdio: "inherit" }
-            );
-            process.exit(reexecRes.status || 0);
+        const statusRes = spawnSync("git", ["status", "--porcelain"], {
+            cwd: ROOT_DIR,
+            encoding: "utf8"
+        });
+        const dirtyEntries = String(statusRes.stdout || "")
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+
+        if (dirtyEntries.length > 0) {
+            console.error("❌ Uncommitted changes detected in working tree. Commit or stash your changes before running 'gas framework:update':");
+            dirtyEntries.slice(0, 10).forEach((line) => console.error(`   ${line}`));
+            if (dirtyEntries.length > 10) {
+                console.error(`   ...and ${dirtyEntries.length - 10} more file(s).`);
+            }
+            process.exit(1);
         }
     }
 
-    // 2. Bersihkan file usang di direktori framework yang sudah dihapus di versi terbaru
+    const hasHeadCommit = gitRefExists("HEAD");
+    const bootstrapFiles = filesToSync.filter(
+        (f) => f === "gas" || f === "gas.cmd" || f.startsWith("local/runtime/")
+    );
+
+    if (!isReexec && bootstrapFiles.length > 0) {
+        checkoutFilesFromRef(sourceRef, bootstrapFiles);
+        const forwardedArgs = rawArgs.filter((a) => a !== "--reexec");
+        const reexecRes = spawnSync(
+            process.execPath,
+            [__filename, "framework:update", "--reexec", ...forwardedArgs],
+            { cwd: ROOT_DIR, stdio: "inherit" }
+        );
+        process.exit(reexecRes.status || 0);
+    }
+
+    let gitMergeRecorded = false;
+
+    if (hasHeadCommit) {
+        if (bootstrapFiles.length > 0) {
+            restorePathsToHead(bootstrapFiles);
+        }
+
+        const mergeRes = spawnSync(
+            "git",
+            ["merge", "--no-commit", "--no-ff", "--allow-unrelated-histories", "-X", "theirs", sourceRef],
+            { cwd: ROOT_DIR, encoding: "utf8" }
+        );
+
+        if (gitRefExists("MERGE_HEAD")) {
+            gitMergeRecorded = true;
+
+            const unmergedRes = spawnSync("git", ["diff", "--name-only", "--diff-filter=U"], {
+                cwd: ROOT_DIR,
+                encoding: "utf8"
+            });
+            const unmergedFiles = String(unmergedRes.stdout || "")
+                .split(/\r?\n/)
+                .map((s) => s.trim())
+                .filter(Boolean);
+
+            for (const file of unmergedFiles) {
+                if (isProtectedPath(file)) {
+                    restorePathsToHead([file]);
+                } else {
+                    spawnSync("git", ["checkout", "--theirs", "--", file], { cwd: ROOT_DIR, stdio: "ignore" });
+                    spawnSync("git", ["add", "--", file], { cwd: ROOT_DIR, stdio: "ignore" });
+                }
+            }
+
+            const stagedRes = spawnSync("git", ["diff", "--cached", "--name-only"], {
+                cwd: ROOT_DIR,
+                encoding: "utf8"
+            });
+            const stagedFiles = String(stagedRes.stdout || "")
+                .split(/\r?\n/)
+                .map((s) => s.trim())
+                .filter(Boolean);
+
+            const protectedToRestore = stagedFiles.filter((f) => isProtectedPath(f));
+            restorePathsToHead(protectedToRestore);
+        } else if (mergeRes.status !== 0) {
+            console.warn("⚠️  Git merge could not be initiated. Falling back to file checkout...");
+        }
+    } else {
+        console.warn("⚠️  No initial Git commit (HEAD) found. Syncing files without Git merge history.");
+    }
+
     const remoteFileSet = new Set(allRemoteFiles);
     for (const dirTarget of managedFrameworkDirs) {
         const localFiles = listLocalFilesRecursive(dirTarget);
@@ -1810,15 +2199,20 @@ function updateFrameworkFromRemote() {
             if (generatedCoreFiles.has(localFile)) continue;
             if (!remoteFileSet.has(localFile)) {
                 fs.rmSync(path.join(ROOT_DIR, localFile), { force: true });
+                if (gitMergeRecorded) {
+                    spawnSync("git", ["rm", "-f", "--ignore-unmatch", localFile], { cwd: ROOT_DIR, stdio: "ignore" });
+                }
                 console.log(`🗑️  Removed obsolete file: ${localFile}`);
             }
         }
     }
 
-    // 3. Tarik semua file framework (termasuk file/folder baru apapun di versi mendatang)
     checkoutFilesFromRef(sourceRef, filesToSync);
 
-    // 4. Scaffold file wajib baru jika project berasal dari v1.0.0 dan belum memilikinya
+    for (const ignoreFile of mergeManagedFiles) {
+        mergeIgnoreFileFromRef(sourceRef, ignoreFile);
+    }
+
     const webRouteFile = path.join(SRC_DIR, "routes", "web.js");
     if (!fs.existsSync(webRouteFile)) {
         writeSrcFile(
@@ -1827,19 +2221,93 @@ function updateFrameworkFromRemote() {
         );
     }
 
-    // 5. Sinkronkan filePushOrder di .clasp.json, manifest scopes, dan compile views
-    syncClaspPushOrderAfterUpdate();
+    syncClaspConfigAfterUpdate();
     if (ensureManifestScopes()) {
         console.log("🔄 Updated OAuth scopes & executionApi in src/appsscript.json.");
     }
     compileViews();
 
-    console.log("\n✅ Framework files updated to latest version.");
-    console.log("👉 Run 'npm install' (if package.json changed), review 'git status' & 'git diff', then commit.");
+    const remotePkg = syncPackageVersionFromRef(sourceRef);
+    const localPkgPath = path.join(ROOT_DIR, "package.json");
+    const localPkg = fs.existsSync(localPkgPath)
+        ? JSON.parse(fs.readFileSync(localPkgPath, "utf8"))
+        : {};
+
+    if (gitMergeRecorded) {
+        const stageTargets = [
+            ...filesToSync,
+            ...Array.from(mergeManagedFiles),
+            "package.json",
+            "package-lock.json"
+        ].filter((f) => fs.existsSync(path.join(ROOT_DIR, f)) && !gitIsIgnored(f));
+
+        const chunkSize = 50;
+        for (let i = 0; i < stageTargets.length; i += chunkSize) {
+            spawnSync("git", ["add", "--", ...stageTargets.slice(i, i + chunkSize)], {
+                cwd: ROOT_DIR,
+                stdio: "ignore"
+            });
+        }
+    }
+
+    const versionLabel = remotePkg?.version ? ` (v${remotePkg.version})` : "";
+    console.log(`\n✅ Framework files updated to latest version${versionLabel}.`);
+
+    if (remotePkg) {
+        const remoteDeps = Object.assign({}, remotePkg.dependencies, remotePkg.devDependencies);
+        const localDeps = Object.assign({}, localPkg.dependencies, localPkg.devDependencies);
+        const changedDeps = Object.entries(remoteDeps).filter(
+            ([pkg, ver]) => localDeps[pkg] !== ver
+        );
+
+        if (changedDeps.length > 0) {
+            console.log("⚠️  Upstream package.json dependency updates detected (local dependencies preserved):");
+            changedDeps.forEach(([pkg, ver]) => {
+                console.log(`   - ${pkg}: ${localDeps[pkg] || "(missing)"} -> ${ver}`);
+            });
+            console.log("👉 Update dependencies in package.json if needed and run 'npm install'.");
+        }
+    }
+
+    const originUrlRes = spawnSync("git", ["remote", "get-url", "origin"], {
+        cwd: ROOT_DIR,
+        encoding: "utf8"
+    });
+    const originUrl = String(originUrlRes.stdout || "").trim();
+    if (originUrl.includes("aqshalzuhdi/asal-gas")) {
+        console.log("ℹ️  Note: 'origin' still points to asal-gas. Point 'origin' to your own GitHub repo before pushing:");
+        console.log("   git remote set-url origin https://github.com/<username>/<your-repo>.git");
+    }
+
+    if (gitMergeRecorded) {
+        const commitMsg = `chore(framework): merge Asal-GAS ${remotePkg?.version ? `v${remotePkg.version}` : branch} from ${sourceRef}`;
+        if (autoCommit) {
+            const commitRes = spawnSync("git", ["commit", "-m", commitMsg], {
+                cwd: ROOT_DIR,
+                stdio: "inherit"
+            });
+            if (commitRes.status === 0) {
+                console.log(`🔒 Recorded Git merge commit (${branch}) so future 'git pull' will not overwrite project files.`);
+            }
+        } else {
+            console.log("🔒 Git merge state staged (MERGE_HEAD active). Protected project files are preserved.");
+            console.log(`👉 Review 'git status' & 'git diff --cached', then run:\n   git commit -m "${commitMsg}"`);
+        }
+    } else {
+        console.log("👉 Review 'git status' & 'git diff', then commit your updated framework files.");
+    }
 }
 
 (async function main() {
     switch (command) {
+        case "-h":
+        case "--h":
+        case "--help":
+        case "help":
+        case undefined:
+            printHelp();
+            break;
+
         case "init":
         case "clasp:create":
             initGasProject(arg1);
@@ -1886,31 +2354,56 @@ function updateFrameworkFromRemote() {
             break;
 
         case "make:module": {
-            if (!arg1) {
+            if (!arg1 || hasFlag("-h", "--h", "--help")) {
                 console.error("Usage: gas make:module Project [--api|--hybrid|--web]");
-                process.exit(1);
+                process.exit(arg1 ? 0 : 1);
             }
-            const entity = toPascalCase(arg1).replace(/(Controller|Seeder)$/, "");
+            const entity = normalizeEntityName(arg1);
             const tablePascal = toPascalCase(pluralizeSnake(toSnakeCase(entity)));
             const modeFlag = resolveControllerMode("--api");
+            createModel(entity);
             createMigration(`Create${tablePascal}Table`);
             createSeeder(entity);
             createController(`${entity}Controller`, modeFlag);
             break;
         }
 
+        case "make:model": {
+            if (!arg1 || hasFlag("-h", "--h", "--help")) {
+                console.error("Usage: gas make:model Project [-m|--migration] [-c|--controller] [-s|--seeder] [-r|--resource] [-a|--all] [--api|--hybrid|--web]");
+                process.exit(arg1 ? 0 : 1);
+            }
+            const entity = normalizeEntityName(arg1);
+            const tablePascal = toPascalCase(pluralizeSnake(toSnakeCase(entity)));
+            const modeFlag = resolveControllerMode("--api");
+            const createAll = hasFlag("-a", "--all");
+
+            createModel(entity);
+
+            if (createAll || hasFlag("-m", "--migration")) {
+                createMigration(`Create${tablePascal}Table`);
+            }
+            if (createAll || hasFlag("-s", "--seeder")) {
+                createSeeder(entity);
+            }
+            if (createAll || hasFlag("-c", "--controller", "-r", "--resource")) {
+                createController(`${entity}Controller`, modeFlag);
+            }
+            break;
+        }
+
         case "make:migration":
-            if (!arg1) {
+            if (!arg1 || hasFlag("-h", "--h", "--help")) {
                 console.error("Usage: gas make:migration CreateProjectsTable");
-                process.exit(1);
+                process.exit(arg1 ? 0 : 1);
             }
             createMigration(arg1);
             break;
 
         case "make:controller": {
-            if (!arg1) {
+            if (!arg1 || hasFlag("-h", "--h", "--help")) {
                 console.error("Usage: gas make:controller HomeController [--web|--api|--hybrid]");
-                process.exit(1);
+                process.exit(arg1 ? 0 : 1);
             }
             const modeFlag = resolveControllerMode("--web");
             createController(arg1, modeFlag);
@@ -1918,17 +2411,17 @@ function updateFrameworkFromRemote() {
         }
 
         case "make:seeder":
-            if (!arg1) {
+            if (!arg1 || hasFlag("-h", "--h", "--help")) {
                 console.error("Usage: gas make:seeder ProjectSeeder");
-                process.exit(1);
+                process.exit(arg1 ? 0 : 1);
             }
             createSeeder(arg1);
             break;
 
         case "make:view":
-            if (!arg1) {
+            if (!arg1 || hasFlag("-h", "--h", "--help")) {
                 console.error("Usage: gas make:view home  (or users/create)");
-                process.exit(1);
+                process.exit(arg1 ? 0 : 1);
             }
             createView(arg1);
             break;
@@ -2094,39 +2587,8 @@ function updateFrameworkFromRemote() {
             break;
 
         default:
-            console.log(`
-Asal-GAS CLI:
-  gas init [Title] [--id <ScriptId>] [-f]                  # Create a new GAS project (or link ID) & setup .clasp.json
-  gas login                                                # Authenticate Google account via clasp
-  gas creds [-f|--force]                                   # Setup creds.json & authenticate clasp for remote execution
-  gas key:generate [-f|--force]                            # Generate APP_KEY in .env/.clasp.json & sync to Script Properties
-  gas push [-f|--force] [--seed] [--setup]                 # Compile views, prompt APP_KEY (first run), push & sync GAS
-  gas pull                                                 # Pull remote source code from GAS into src/
-  gas status                                               # Check local vs remote file status
-  gas open                                                 # Open project in Google Apps Script Web Editor
-  gas deploy [Description] [--migrate] [--seed] [--setup]  # Compile views, prompt APP_KEY (first run), push & deploy Web App
-  gas framework:update [--dry-run] [--remote <name>]       # Sync core, runtime & CLI files without touching project files
-
-  gas make:module <Entity> [--api|--hybrid|--web]          # Generate Migration + Seeder + Controller
-  gas make:migration <Name>                                # Create migration in src/database/migrations/
-  gas make:controller <Name> [--web|--api|--hybrid]        # Create Web, API Resource, or Hybrid controller
-  gas make:seeder <Name>                                   # Create seeder in src/database/seeders/
-  gas make:view <Name>                                     # Create Blade-lite .gas.js view in src/resources/views/
-  gas view:compile                                         # Compile src/resources/views/**/*.gas.js for GAS push
-
-  gas migrate [--seed] [--no-count]                        # Run pending migrations locally
-  gas migrate:fresh [--seed] [--no-count]                  # Reset local db.json & re-run all migrations
-  gas migrate:rollback                                     # Roll back the last migration batch
-  gas migrate:status                                       # Display migration status
-  gas migrate:remote [--seed] [--no-count]                 # Run pending migrations (+ optional seeder) on remote GAS
-  gas migrate:remote:rollback                              # Roll back the last migration batch on remote GAS
-  gas migrate:remote:refresh [--seed] [--no-count]         # Roll back and re-run remote migrations (+ optional seeder)
-
-  gas db:seed [Seeder] [--remote] [--no-count]             # Run DatabaseSeeder (or specific seeder) locally or on remote GAS
-  gas db:seed:remote [Seeder] [--no-count]                 # Run DatabaseSeeder (or specific seeder) on remote GAS
-  gas db:reindex                                           # Rebuild local schema metadata and row indexes
-
-  gas route:list [Filter] [--method <HTTP>]                # List registered Web & API routes and middlewares
-`);
+            console.error(`❌ Unknown command: ${command}`);
+            printHelp();
+            process.exit(1);
     }
 })();
