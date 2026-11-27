@@ -1078,6 +1078,11 @@ function buildEnvPayload(appKey) {
     return localEnv;
 }
 
+function resolveBaseUrl(envObj, fallbackUrl = "") {
+    const envBaseUrl = String((envObj && envObj.BASE_URL) || "").trim().replace(/\/+$/g, "");
+    return envBaseUrl || String(fallbackUrl || "").trim().replace(/\/+$/g, "");
+}
+
 async function ensureAppKeyOnFirstDeploy(cfg, remoteInfo = null) {
     const envPath = path.join(ROOT_DIR, ".env");
     const localEnv = loadLocalEnv(envPath);
@@ -1145,11 +1150,12 @@ async function generateAppKeyCommand() {
     console.log("📄 Saved to .env" + (hasClasp ? " and .clasp.json." : "."));
 
     if (hasClasp) {
+        const envWithKey = buildEnvPayload(newKey);
         const syncRes = tryClaspRun("setupWorkspace", {
-            env: buildEnvPayload(newKey),
+            env: envWithKey,
             migrate: false,
             seed: false,
-            webAppUrl: cfg.webAppUrl || ""
+            webAppUrl: resolveBaseUrl(envWithKey, cfg.webAppUrl || "")
         });
         if (syncRes && !syncRes.__gasException && syncRes.status) {
             console.log("☁️  Synced APP_KEY to GAS Script Properties.");
@@ -1167,6 +1173,7 @@ async function pushAndSyncGas() {
 
     const appKey = await ensureAppKeyOnFirstDeploy(cfg, null);
     const envWithKey = buildEnvPayload(appKey);
+    const baseUrl = resolveBaseUrl(envWithKey, cfg.webAppUrl || "");
 
     compileViews();
     runClaspCommand(`push${forceFlag}`);
@@ -1176,7 +1183,7 @@ async function pushAndSyncGas() {
         env: envWithKey,
         migrate: true,
         seed: shouldSeed,
-        webAppUrl: cfg.webAppUrl || ""
+        webAppUrl: baseUrl
     });
 
     if (remoteRes && !remoteRes.__gasException && remoteRes.status) {
@@ -1185,7 +1192,7 @@ async function pushAndSyncGas() {
             printSeederSummary(remoteRes.seeder, "Remote Seeder");
         }
         if (remoteRes.first_setup || !remoteRes.SHEET_ID || showSetup) {
-            printSetupSummary(remoteRes, cfg.webAppUrl);
+            printSetupSummary(remoteRes, baseUrl);
         }
         cfg.initialized = true;
         writeClaspConfig(cfg);
@@ -1193,7 +1200,7 @@ async function pushAndSyncGas() {
     }
 
     if (!cfg.initialized || showSetup) {
-        printManualSetupReminder(cfg.webAppUrl);
+        printManualSetupReminder(baseUrl);
         cfg.initialized = true;
         writeClaspConfig(cfg);
     }
@@ -1244,17 +1251,21 @@ async function deployGasWebApp(description) {
     }
 
     const webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec`;
+    const baseUrl = resolveBaseUrl(envWithKey, webAppUrl);
     cfg.deploymentId = deploymentId;
     cfg.webAppUrl = webAppUrl;
     writeClaspConfig(cfg);
     console.log(`🌐 Web App URL: ${webAppUrl}`);
+    if (baseUrl !== webAppUrl) {
+        console.log(`🔗 Base URL   : ${baseUrl}`);
+    }
 
     syncApiExecutableDeployment(cfg);
 
     const bootRes = tryClaspRun(
         "setupWorkspace",
         {
-            webAppUrl,
+            webAppUrl: baseUrl,
             env: envWithKey,
             migrate: shouldMigrate,
             seed: shouldSeed
@@ -1274,7 +1285,7 @@ async function deployGasWebApp(description) {
             printSeederSummary(bootRes.seeder, "Remote Seeder");
         }
         if (bootRes.first_setup || !bootRes.SHEET_ID || showSetup) {
-            printSetupSummary(bootRes, webAppUrl);
+            printSetupSummary(bootRes, baseUrl);
         }
         cfg.initialized = true;
         writeClaspConfig(cfg);
@@ -1282,7 +1293,7 @@ async function deployGasWebApp(description) {
     }
 
     if (!cfg.initialized || showSetup) {
-        printManualSetupReminder(webAppUrl);
+        printManualSetupReminder(baseUrl);
         cfg.initialized = true;
         writeClaspConfig(cfg);
     }
@@ -1997,13 +2008,14 @@ function updateFrameworkFromRemote() {
                     : "☁️  Running remote migration on Google Apps Script..."
             );
 
+            const localEnv = loadLocalEnv(path.join(ROOT_DIR, ".env"));
             const res = tryClaspRun(
                 "setupWorkspace",
                 {
-                    env: loadLocalEnv(path.join(ROOT_DIR, ".env")),
+                    env: localEnv,
                     migrate: true,
                     seed: shouldSeed,
-                    webAppUrl: cfg.webAppUrl || ""
+                    webAppUrl: resolveBaseUrl(localEnv, cfg.webAppUrl || "")
                 },
                 true
             );
