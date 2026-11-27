@@ -34,6 +34,21 @@
         </div>
 
         <div>
+            <label for="username" style="display:block; font-weight:600; margin-bottom:6px;">Username</label>
+            <input
+                type="text"
+                id="username"
+                name="username"
+                value="{{ (typeof old !== 'undefined' && old.username !== undefined) ? old.username : (item.username || '') }}"
+                placeholder="Masukkan username untuk login"
+                style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px;"
+            >
+            @if (typeof errors !== 'undefined' && errors.username)
+                <small style="color:#dc2626; display:block; margin-top:4px;">{{ errors.username[0] }}</small>
+            @endif
+        </div>
+
+        <div>
             <label for="email" style="display:block; font-weight:600; margin-bottom:6px;">Email</label>
             <input
                 type="email"

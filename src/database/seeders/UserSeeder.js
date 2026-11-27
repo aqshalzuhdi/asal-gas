@@ -20,6 +20,7 @@ Seeder.register("UserSeeder", {
             var insertRes = create("users", {
                 data: {
                     session: "",
+                    session_expires_at: "",
                     name: user.name,
                     username: user.username,
                     password: Hash.make(user.password),

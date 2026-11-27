@@ -16,7 +16,7 @@
     @endif
 
     <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h1 style="margin:0;">Selamat datang, {{ user.name }}</h1>
+        <h1 style="margin:0;">Selamat datang, {{ (typeof user !== 'undefined' && user && user.name) ? user.name : 'Developer' }}</h1>
         <a href="{{ route('users.create') }}" style="background:#2563eb; color:#fff; text-decoration:none; padding:8px 14px; border-radius:8px; font-weight:600;">
             + Tambah User
         </a>
@@ -30,6 +30,9 @@
                 <div>
                     {{ loop.iteration }}.
                     <strong>{{ item.name || item.username || 'User #' + item.id }}</strong>
+                    @if (item.username)
+                        <span style="color:#2563eb; font-size:13px;">(@{{ item.username }})</span>
+                    @endif
                     @if (item.email)
                         <span style="color:#64748b;">— {{ item.email }}</span>
                     @endif
