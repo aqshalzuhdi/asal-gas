@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { execFileSync } = require("child_process");
 
 const STORAGE_DIR = path.join(__dirname, "../storage");
 const SRC_DIR = path.join(__dirname, "../../src");
@@ -326,6 +327,109 @@ function installGasGlobals() {
                 .replace("mm", pad(d.getMinutes()))
                 .replace("ss", pad(d.getSeconds()));
         }
+    };
+
+    global.UrlFetchApp = {
+        fetch: (url, params = {}) => {
+            const method = String(params.method || "get").toUpperCase();
+            const headers = Object.assign({}, params.headers || {});
+            const redirect = params.followRedirects === false ? "manual" : "follow";
+            let body = null;
+
+            if (params.contentType) {
+                headers["Content-Type"] = params.contentType;
+            }
+
+            if (params.payload !== undefined && params.payload !== null) {
+                if (typeof params.payload === "string") {
+                    body = params.payload;
+                } else if (Array.isArray(params.payload)) {
+                    body = fromSignedBytes(params.payload).toString("utf8");
+                } else if (typeof params.payload === "object") {
+                    const hasContentType = Object.keys(headers).some(
+                        (k) => k.toLowerCase() === "content-type"
+                    );
+                    if (!hasContentType) {
+                        headers["Content-Type"] = "application/x-www-form-urlencoded";
+                        body = new URLSearchParams(params.payload).toString();
+                    } else {
+                        body = JSON.stringify(params.payload);
+                    }
+                }
+            }
+
+            const workerScript = `
+                (async () => {
+                    try {
+                        const opts = {
+                            method: process.env.__GAS_METHOD,
+                            headers: JSON.parse(process.env.__GAS_HEADERS || "{}"),
+                            redirect: process.env.__GAS_REDIRECT || "follow",
+                            signal: AbortSignal.timeout(15000)
+                        };
+                        if (process.env.__GAS_HAS_BODY === "1") {
+                            opts.body = process.env.__GAS_BODY;
+                        }
+                        const res = await fetch(process.env.__GAS_URL, opts);
+                        const text = await res.text();
+                        const resHeaders = {};
+                        res.headers.forEach((v, k) => { resHeaders[k] = v; });
+                        process.stdout.write(JSON.stringify({
+                            ok: true,
+                            status: res.status,
+                            text,
+                            headers: resHeaders
+                        }));
+                    } catch (err) {
+                        process.stdout.write(JSON.stringify({
+                            ok: false,
+                            error: err && err.message ? err.message : String(err)
+                        }));
+                    }
+                })();
+            `;
+
+            const raw = execFileSync(process.execPath, ["-e", workerScript], {
+                encoding: "utf8",
+                timeout: 18000,
+                windowsHide: true,
+                env: Object.assign({}, process.env, {
+                    __GAS_URL: String(url),
+                    __GAS_METHOD: method,
+                    __GAS_HEADERS: JSON.stringify(headers),
+                    __GAS_REDIRECT: redirect,
+                    __GAS_HAS_BODY: body !== null ? "1" : "0",
+                    __GAS_BODY: body !== null ? String(body) : ""
+                })
+            });
+
+            const result = JSON.parse(raw);
+            if (!result.ok) {
+                throw new Error("Exception: Request failed for " + url + " (" + result.error + ")");
+            }
+
+            if (result.status >= 400 && !params.muteHttpExceptions) {
+                throw new Error("Exception: Request failed for " + url + " returned code " + result.status);
+            }
+
+            return {
+                getResponseCode: () => result.status,
+                getContentText: () => result.text,
+                getContent: () => toSignedBytes(Buffer.from(result.text, "utf8")),
+                getHeaders: () => result.headers,
+                getAllHeaders: () => result.headers,
+                getBlob: () => ({
+                    getBytes: () => toSignedBytes(Buffer.from(result.text, "utf8")),
+                    getDataAsString: () => result.text,
+                    getContentType: () => result.headers["content-type"] || "text/plain"
+                })
+            };
+        },
+        fetchAll: (requests) => requests.map((req) => {
+            if (typeof req === "string") return global.UrlFetchApp.fetch(req);
+            const { url, ...params } = req;
+            return global.UrlFetchApp.fetch(url, params);
+        })
     };
 }
 
