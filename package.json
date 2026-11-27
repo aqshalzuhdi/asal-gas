@@ -1,6 +1,6 @@
 {
     "name": "asal-gas",
-    "version": "2.2.2",
+    "version": "2.3.0",
     "bin": {
         "gas": "./gas"
     },
