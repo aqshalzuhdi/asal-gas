@@ -1,6 +1,6 @@
 {
     "name": "asal-gas",
-    "version": "2.3.2",
+    "version": "2.4.0",
     "bin": {
         "gas": "./gas"
     },
@@ -12,10 +12,11 @@
         "migrate:rollback": "node gas migrate:rollback",
         "migrate:status": "node gas migrate:status",
         "db:seed": "node gas db:seed",
-        "push": "clasp push",
-        "status": "clasp show-file-status"
+        "route:list": "node gas route:list",
+        "push": "node gas push",
+        "deploy": "node gas deploy",
+        "status": "node gas status"
     },
-    "dev": "nodemon --watch src --watch local --ignore local/storage/ --ext js,json local/server.js",
     "devDependencies": {
         "@google/clasp": "^3.4.1",
         "nodemon": "^3.1.14"

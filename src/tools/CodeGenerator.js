@@ -3,15 +3,17 @@
  *
  * Usage:
  * 1. Set `GENERATOR_TARGET.module` (e.g., "Project"), then run one of:
- *    - `generateModule`     -> Scaffolds Migration + Seeder + Controller
+ *    - `generateModule`     -> Scaffolds Model + Migration + Seeder + Controller
+ *    - `generateModel`      -> Creates `Project` Model
  *    - `generateMigration`  -> Creates `CreateProjectsTable`
  *    - `generateSeeder`     -> Creates `ProjectSeeder`
  *    - `generateController` -> Creates `ProjectController`
  * 2. For custom names (e.g., alter table migrations), populate the specific
- *    override field (`migration` / `seeder` / `controller`).
+ *    override field (`model` / `migration` / `seeder` / `controller`).
  */
 var GENERATOR_TARGET = {
     module: "",     // Primary target (sufficient for standard operations)
+    model: "",      // Optional override, e.g., "Project"
     migration: "",  // Optional override, e.g., "AddLinkedinToCompaniesTable"
     seeder: "",     // Optional override, e.g., "AdminUserSeeder"
     controller: ""  // Optional override, e.g., "ReportController"
@@ -30,6 +32,7 @@ var CodeGenerator = {
         var tablePascal = this._toPascalCase(tableName);
 
         var filesToCreate = [
+            this._prepareModelFile(entityPascal),
             this._prepareMigrationFile("Create" + tablePascal + "Table", 0),
             this._prepareSeederFile(entityPascal + "Seeder"),
             this._prepareControllerFile(entityPascal + "Controller", { sheet: tableName })
@@ -40,6 +43,16 @@ var CodeGenerator = {
         Logger.log("=== MODULE SCAFFOLDING COMPLETED (" + entityPascal + ") ===");
         Logger.log('Register in routes/api -> Route.resource("' + tableName + '", "' + entityPascal + 'Controller");');
         return result;
+    },
+
+    model: function (rawName) {
+        var target = String(rawName || GENERATOR_TARGET.model || GENERATOR_TARGET.module || "").trim();
+        if (!target) {
+            throw new Error("Set GENERATOR_TARGET.module or GENERATOR_TARGET.model first.");
+        }
+
+        var fileSpec = this._prepareModelFile(target);
+        return this._createProjectFiles([fileSpec]);
     },
 
     migration: function (rawName) {
@@ -91,6 +104,15 @@ var CodeGenerator = {
         return pascal.replace(/(Controller|Seeder)$/, "") || pascal;
     },
 
+    _prepareModelFile: function (rawName) {
+        var entityPascal = this._resolveBaseEntity(rawName);
+        return {
+            name: entityPascal,
+            source: this._buildModelTemplate(entityPascal),
+            meta: { model: entityPascal }
+        };
+    },
+
     _prepareMigrationFile: function (rawName, offsetSeconds) {
         var pascalName = this._toPascalCase(rawName);
         var snakeName = this._toSnakeCase(pascalName);
@@ -115,7 +137,7 @@ var CodeGenerator = {
 
         return {
             name: gasFileName,
-            source: this._buildSeederTemplate(pascalName, tableName),
+            source: this._buildSeederTemplate(pascalName, baseEntity, tableName),
             meta: { seeder: pascalName, table: tableName }
         };
     },
@@ -128,7 +150,7 @@ var CodeGenerator = {
         var gasFileName = pascalName;
         var sourceCode = opts.plain
             ? this._buildPlainControllerTemplate(pascalName)
-            : this._buildResourceControllerTemplate(pascalName, tableName);
+            : this._buildResourceControllerTemplate(pascalName, baseEntity);
 
         var routeSuggestion = opts.plain
             ? 'Route.get("' + this._toSnakeCase(baseEntity) + '", "' + pascalName + '@index");'
@@ -142,6 +164,31 @@ var CodeGenerator = {
                 routeSuggestion: routeSuggestion
             }
         };
+    },
+
+    _buildModelTemplate: function (modelName) {
+        return [
+            'class ' + modelName + ' extends Model {',
+            '    // Define either fillable or guarded (required):',
+            '    fillable = [',
+            '        "name"',
+            '    ];',
+            '',
+            '    // guarded = [',
+            '    //     "id"',
+            '    // ];',
+            '',
+            '    // Optional output redaction:',
+            '    hidden = [',
+            '        "deleted_at"',
+            '    ];',
+            '',
+            '    casts = {',
+            '        //',
+            '    };',
+            '}',
+            ''
+        ].join("\n");
     },
 
     _buildMigrationTemplate: function (migrationId, snakeName) {
@@ -240,68 +287,48 @@ var CodeGenerator = {
         ].join("\n");
     },
 
-    _buildSeederTemplate: function (seederName, tableName) {
+    _buildSeederTemplate: function (seederName, entityPascal, tableName) {
         return [
             'Seeder.register("' + seederName + '", {',
             '    run: function () {',
-            '        var records = [',
+            '        const records = [',
             '            // { name: "Sample Record" }',
             '        ];',
             '',
-            '        var seeded = [];',
-            '        for (var i = 0; i < records.length; i++) {',
-            '            var res = create("' + tableName + '", { data: records[i] });',
-            '            if (!res.status) {',
-            '                throw new Error("Failed to seed ' + tableName + ': " + res.message);',
-            '            }',
-            '            seeded.push(res.data);',
+            '        const res = ' + entityPascal + '.bulkCreate(records);',
+            '        if (!res || !res.status) {',
+            '            throw new Error("Failed to seed ' + tableName + ': " + (res ? res.message : "Unknown error"));',
             '        }',
             '',
-            '        return { table: "' + tableName + '", count: seeded.length };',
+            '        return { table: "' + tableName + '", count: res.count };',
             '    }',
             '});',
             ''
         ].join("\n");
     },
 
-    _buildResourceControllerTemplate: function (controllerName, tableName) {
+    _buildResourceControllerTemplate: function (controllerName, entityPascal) {
         return [
-            'var ' + controllerName + ' = (function () {',
-            '    var _instance;',
-            '    return new Proxy({}, {',
-            '        get: function (_, prop) {',
-            '            if (!_instance) {',
-            '                _instance = BaseController.init({',
-            '                    sheet: "' + tableName + '",',
-            '                    with: []',
+            'class ' + controllerName + ' extends Controller {',
+            '    model = ' + entityPascal + ';',
+            '    with = [];',
             '',
-            '                    // Optional lifecycle hooks (beforeStore, afterStore, beforeUpdate, afterUpdate, beforeDestroy, afterDestroy):',
-            '                    // beforeStore: function (ctx) {',
-            '                    //     return { status: true };',
-            '                    // },',
-            '                    //',
-            '                    // Or override resource methods (index, store, update, destroy, restore, forceDelete):',
-            '                    // store: function (ctx) {',
-            '                    //     return this.superStore(ctx);',
-            '                    // }',
-            '                });',
-            '            }',
-            '            var val = _instance[prop];',
-            '            return typeof val === "function" ? val.bind(_instance) : val;',
-            '        }',
-            '    });',
-            '})();',
+            '    // Optional lifecycle hooks: beforeStore, afterStore, beforeUpdate, afterUpdate, beforeDestroy, afterDestroy',
+            '    // beforeStore(ctx) {',
+            '    //     return { status: true };',
+            '    // }',
+            '}',
             ''
         ].join("\n");
     },
 
     _buildPlainControllerTemplate: function (controllerName) {
         return [
-            'var ' + controllerName + ' = {',
-            '    index: function (ctx) {',
+            'class ' + controllerName + ' extends Controller {',
+            '    index(ctx) {',
             '        return { status: true, data: [] };',
             '    }',
-            '};',
+            '}',
             ''
         ].join("\n");
     },
@@ -365,7 +392,8 @@ var CodeGenerator = {
 
         if (putRes.getResponseCode() !== 200) {
             throw new Error(
-                "Failed to save files to project (" + putRes.getResponseCode() + "): " + putRes.getContentText()
+                "Failed to save files to project (" + putRes.getResponseCode() + "): " +
+                putRes.getContentText()
             );
         }
 
@@ -418,6 +446,10 @@ var CodeGenerator = {
 
 function generateModule(name) {
     return CodeGenerator.module(name);
+}
+
+function generateModel(name) {
+    return CodeGenerator.model(name);
 }
 
 function generateMigration(name) {

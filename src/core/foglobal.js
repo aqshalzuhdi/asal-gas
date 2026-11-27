@@ -3,6 +3,9 @@ var Sanitizer = {
         "with_password": true,
         "withpassword": true,
         "filter[with_password]": true,
+        "make_visible": true,
+        "makevisible": true,
+        "filter[make_visible]": true,
         "with": true
     },
 
@@ -404,27 +407,18 @@ function isWebRequest(e, context) {
         : ((e && e.parameter && typeof e.parameter === "object") ? e.parameter : {});
     var payload = (ctx.payload && typeof ctx.payload === "object") ? ctx.payload : {};
 
-    // 1. Override eksplisit per request (?format=json atau ?format=html)
     var formatHint = String(params.format || payload.format || "").trim().toLowerCase();
     if (formatHint === "json") return false;
     if (formatHint === "html") return true;
 
-    // 2. Override eksplisit dari definisi route (Route.resource vs Route.view)
     if (ctx.isApi === true) return false;
     if (ctx.isWeb === true) return true;
 
-    // 3. Cek APP_MODE: jika bukan "web" (misal "api"), paksa JSON untuk semua endpoint default
     var appMode = (typeof CONFIG !== "undefined" && typeof CONFIG.getOptional === "function")
         ? String(CONFIG.getOptional("APP_MODE", "web") || "web").trim().toLowerCase()
         : "web";
 
     if (appMode !== "web") {
-        return false;
-    }
-
-    // 4. Aturan khusus saat APP_MODE=web
-    var method = String(ctx.method || (params._method || payload._method || "GET")).toUpperCase();
-    if (method !== "GET") {
         return false;
     }
 
@@ -436,6 +430,11 @@ function isWebRequest(e, context) {
     var headers = (e && e.headers && typeof e.headers === "object") ? e.headers : {};
     var acceptHeader = String(headers.accept || headers.Accept || "").toLowerCase();
     if (acceptHeader.indexOf("application/json") !== -1 && acceptHeader.indexOf("text/html") === -1) {
+        return false;
+    }
+
+    var method = String(ctx.method || (params._method || payload._method || "GET")).toUpperCase();
+    if (method !== "GET" && acceptHeader.indexOf("text/html") === -1) {
         return false;
     }
 
@@ -683,6 +682,7 @@ function formatErrorResponse(err, statusCode, fallbackMessage, context) {
 
     if (isDebugEnabled()) {
         var debugPayload = {
+            _isException: true,
             status: false,
             code: code,
             error_type: (err && err.name) ? String(err.name) : "Error",
@@ -722,31 +722,46 @@ function formatErrorResponse(err, statusCode, fallbackMessage, context) {
         return debugPayload;
     }
 
-    return {
+    var isExposed = Boolean(err && err.expose === true);
+    var publicPayload = {
+        _isException: true,
         status: false,
         code: code,
-        message: fallbackMessage || (code === 404 ? "404 Not Found" : "Internal server error.")
+        message: isExposed
+            ? rawMessage
+            : (fallbackMessage || (code === 404 ? "404 Not Found" : "Internal server error."))
     };
+
+    if (isExposed && err && err.name) {
+        publicPayload.error_type = String(err.name);
+    }
+
+    return publicPayload;
 }
 
-function renderErrorHtml(errorPayload) {
+function renderErrorHtml(errorPayload, isException) {
     var code = Number(errorPayload && errorPayload.code) || 500;
-    var debug = isDebugEnabled();
+    var showDiagnostics = Boolean(isException) && isDebugEnabled();
     var appName = (typeof CONFIG !== "undefined" && typeof CONFIG.getOptional === "function")
         ? String(CONFIG.getOptional("APP_NAME", "Asal-GAS"))
         : "Asal-GAS";
 
-    var title = debug
+    var title = showDiagnostics
         ? (errorPayload.error_type || "Error") + " (" + code + ") - " + appName
         : code + " | " + (errorPayload.message || "Internal Server Error");
 
     var bodyHtml = "";
-    if (!debug) {
+    if (!showDiagnostics) {
+        var validationJson = errorPayload.errors ? JSON.stringify(errorPayload.errors, null, 2) : "";
         bodyHtml =
             '<div class="card">' +
-                '<div class="badge">HTTP ' + escapeHtml(code) + '</div>' +
-                '<h1>' + escapeHtml(errorPayload.message || "Internal server error.") + '</h1>' +
-                '<p class="muted">Enable <code>APP_DEBUG=true</code> to inspect full error diagnostics.</p>' +
+                '<div class="header">' +
+                    '<span class="badge">HTTP ' + escapeHtml(code) + '</span>' +
+                    (errorPayload.error_type ? '<span class="type">' + escapeHtml(errorPayload.error_type) + '</span>' : '') +
+                '</div>' +
+                '<h1 class="msg">' + escapeHtml(errorPayload.message || "Internal server error.") + '</h1>' +
+                (validationJson ? '<h3>Details</h3><pre>' + escapeHtml(validationJson) + '</pre>' : '') +
+                (isException ? '<p class="muted">Enable <code>APP_DEBUG=true</code> to inspect full error diagnostics.</p>' : '') +
             '</div>';
     } else {
         var ctx = errorPayload.context || {};
@@ -797,22 +812,24 @@ function renderErrorHtml(errorPayload) {
 }
 
 function failResponse(message, code, extra) {
-    var statusCode = code || 400;
-    var msg = message || "Request failed.";
+    var isErrInstance = message instanceof Error;
+    var statusCode = code || (isErrInstance && message.statusCode) || 400;
+    var msg = isErrInstance
+        ? (message.message || "Request failed.")
+        : (message || "Request failed.");
+
     var res = Object.assign({
         status: false,
         code: statusCode,
         message: msg
     }, extra || {});
 
-    if (isDebugEnabled() && !(res.error instanceof Error)) {
-        var err = new Error(msg);
-        err.statusCode = statusCode;
-        if (typeof Error.captureStackTrace === "function") {
-            Error.captureStackTrace(err, failResponse);
-        }
-        res.error = err;
+    if (isErrInstance) {
+        res._exception = message;
+    } else if (res.error instanceof Error) {
+        res._exception = res.error;
     }
+    delete res.error;
 
     return res;
 }
@@ -825,44 +842,41 @@ function handleResponse(responseObject, e, context) {
     var webMode = isWebRequest(e, context);
 
     if (responseObject && typeof responseObject === "object" && responseObject.status === false) {
-        var enriched = responseObject;
+        var isCaughtException = Boolean(
+            responseObject._isException === true ||
+            responseObject._exception instanceof Error ||
+            responseObject.error instanceof Error
+        );
 
-        if (isDebugEnabled()) {
-            var errObj = (responseObject.error instanceof Error)
-                ? responseObject.error
-                : null;
+        var cleaned = Object.assign({}, responseObject);
 
-            if (!errObj) {
-                errObj = new Error(responseObject.message || "Request failed with status=false");
-                errObj.statusCode = responseObject.code || 500;
-                if (typeof Error.captureStackTrace === "function") {
-                    Error.captureStackTrace(errObj, handleResponse);
-                }
-            }
+        if (isCaughtException && !responseObject._isException) {
+            var rawErr = responseObject._exception instanceof Error
+                ? responseObject._exception
+                : responseObject.error;
 
-            if (responseObject.errors) {
-                errObj.errors = responseObject.errors;
+            if (responseObject.errors && !rawErr.errors) {
+                rawErr.errors = responseObject.errors;
             }
 
             var formatted = formatErrorResponse(
-                errObj,
-                responseObject.code || errObj.statusCode || 500,
+                rawErr,
+                responseObject.code || rawErr.statusCode || 500,
                 responseObject.message,
                 context
             );
-
-            enriched = Object.assign({}, responseObject, formatted);
-            delete enriched.error;
-        } else {
-            enriched = Object.assign({}, responseObject);
-            delete enriched.error;
+            cleaned = Object.assign({}, cleaned, formatted);
         }
+
+        delete cleaned._isException;
+        delete cleaned._exception;
+        delete cleaned.error;
 
         if (webMode) {
-            return renderErrorHtml(enriched);
+            return renderErrorHtml(cleaned, isCaughtException);
         }
 
-        return ContentService.createTextOutput(JSON.stringify(enriched))
+        return ContentService.createTextOutput(JSON.stringify(cleaned))
             .setMimeType(ContentService.MimeType.JSON);
     }
 

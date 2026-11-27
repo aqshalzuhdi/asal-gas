@@ -102,11 +102,44 @@ var Route = (function () {
         return result;
     }
 
+    function resolveControllerTarget(target) {
+        if (!target) return null;
+        if (typeof Controller !== "undefined" && typeof Controller.resolve === "function") {
+            return Controller.resolve(target);
+        }
+        if (typeof target === "string") {
+            return globalThis[target.trim()] || null;
+        }
+        if (typeof target === "function") {
+            if (!target.__singletonInstance) {
+                target.__singletonInstance = new target();
+            }
+            return target.__singletonInstance;
+        }
+        return typeof target === "object" ? target : null;
+    }
+
     function resolveHandler(handlerSpec) {
         if (!handlerSpec) return null;
 
         if (typeof handlerSpec === "function") {
+            if (typeof Controller !== "undefined" && handlerSpec.prototype instanceof Controller) {
+                return null;
+            }
             return handlerSpec;
+        }
+
+        if (Array.isArray(handlerSpec)) {
+            if (handlerSpec.length < 2) return null;
+            var arrCtrl = resolveControllerTarget(handlerSpec[0]);
+            var arrMethod = String(handlerSpec[1] || "").trim();
+
+            if (!arrCtrl || typeof arrCtrl !== "object") return null;
+            if (!arrMethod || typeof arrCtrl[arrMethod] !== "function") return null;
+
+            return function (ctx) {
+                return arrCtrl[arrMethod](ctx);
+            };
         }
 
         if (typeof handlerSpec === "string") {
@@ -115,7 +148,7 @@ var Route = (function () {
 
             var ctrlName = parts[0].trim();
             var methodName = parts[1].trim();
-            var ctrlObj = globalThis[ctrlName];
+            var ctrlObj = resolveControllerTarget(ctrlName);
 
             if (!ctrlObj || typeof ctrlObj !== "object") return null;
             if (typeof ctrlObj[methodName] !== "function") return null;
@@ -126,9 +159,7 @@ var Route = (function () {
         }
 
         if (typeof handlerSpec === "object") {
-            var targetCtrl = typeof handlerSpec.controller === "string"
-                ? globalThis[handlerSpec.controller]
-                : handlerSpec.controller;
+            var targetCtrl = resolveControllerTarget(handlerSpec.controller);
 
             if (!targetCtrl || typeof targetCtrl !== "object") return null;
             if (typeof targetCtrl[handlerSpec.method] !== "function") return null;
@@ -374,6 +405,7 @@ var Route = (function () {
             if (
                 ctrl &&
                 typeof ctrl === "object" &&
+                !Array.isArray(ctrl) &&
                 typeof ctrl.index !== "function" &&
                 typeof ctrl.store !== "function"
             ) {
@@ -525,11 +557,12 @@ var Route = (function () {
                         handler: resolvedFn
                     });
                 } else {
-                    brokenSpecs.push(
-                        typeof entries[v].handlerSpec === "string"
-                            ? entries[v].handlerSpec
-                            : JSON.stringify(entries[v].handlerSpec)
-                    );
+                    var specDesc = typeof entries[v].handlerSpec === "string"
+                        ? entries[v].handlerSpec
+                        : Array.isArray(entries[v].handlerSpec)
+                            ? ((entries[v].handlerSpec[0] && entries[v].handlerSpec[0].name) || String(entries[v].handlerSpec[0])) + "@" + entries[v].handlerSpec[1]
+                            : JSON.stringify(entries[v].handlerSpec);
+                    brokenSpecs.push(specDesc);
                 }
             }
 
@@ -613,15 +646,26 @@ var Route = (function () {
                 for (var e = 0; e < entries.length; e++) {
                     var entry = entries[e];
                     var handlerLabel = "[Closure]";
+                    var controllerRef = null;
 
                     if (typeof entry.handlerSpec === "string") {
                         handlerLabel = entry.handlerSpec;
+                        controllerRef = entry.handlerSpec.split("@")[0].trim();
+                    } else if (Array.isArray(entry.handlerSpec) && entry.handlerSpec.length >= 2) {
+                        controllerRef = entry.handlerSpec[0];
+                        var tupleCtrlName = typeof controllerRef === "string"
+                            ? controllerRef
+                            : (controllerRef && controllerRef.name ? controllerRef.name : "Controller");
+                        handlerLabel = tupleCtrlName + "@" + entry.handlerSpec[1];
                     } else if (entry.handlerSpec && typeof entry.handlerSpec === "object") {
-                        var ctrlName = typeof entry.handlerSpec.controller === "string"
-                            ? entry.handlerSpec.controller
-                            : (entry.handlerSpec.controller && entry.handlerSpec.controller.sheet
-                                ? "BaseController (" + entry.handlerSpec.controller.sheet + ")"
-                                : "Controller");
+                        controllerRef = entry.handlerSpec.controller;
+                        var ctrlName = typeof controllerRef === "string"
+                            ? controllerRef
+                            : (controllerRef && controllerRef.name
+                                ? controllerRef.name
+                                : (controllerRef && controllerRef.sheet
+                                    ? "BaseController (" + controllerRef.sheet + ")"
+                                    : "Controller"));
                         handlerLabel = ctrlName + "@" + entry.handlerSpec.method;
                     }
 
@@ -629,13 +673,16 @@ var Route = (function () {
                         ? entry.options.sheet
                         : "-";
 
-                    if (sheetLabel === "-" && entry.handlerSpec && typeof entry.handlerSpec === "object") {
-                        var resolvedCtrl = typeof entry.handlerSpec.controller === "string"
-                            ? globalThis[entry.handlerSpec.controller]
-                            : entry.handlerSpec.controller;
-
-                        if (resolvedCtrl && resolvedCtrl.sheet) {
-                            sheetLabel = resolvedCtrl.sheet;
+                    if (sheetLabel === "-" && controllerRef) {
+                        try {
+                            var resolvedCtrl = resolveControllerTarget(controllerRef);
+                            if (resolvedCtrl && resolvedCtrl.model && typeof resolvedCtrl.model.getTable === "function") {
+                                sheetLabel = resolvedCtrl.model.getTable();
+                            } else if (resolvedCtrl && resolvedCtrl.sheet) {
+                                sheetLabel = resolvedCtrl.sheet;
+                            }
+                        } catch (modelErr) {
+                            sheetLabel = "[Model Error: " + modelErr.message + "]";
                         }
                     }
 
@@ -968,12 +1015,11 @@ function dispatchHttpRequest(e, defaultMethod) {
 
         var resolution = Route.resolve(routeName, rawMethod, action);
         if (resolution.statusCode !== 200) {
-            var resErr = new Error(resolution.message);
-            resErr.statusCode = resolution.statusCode;
-            var failPayload = (typeof formatErrorResponse === "function")
-                ? formatErrorResponse(resErr, resolution.statusCode, resolution.message, context)
-                : { status: false, code: resolution.statusCode, message: resolution.message };
-            return handleResponse(failPayload, e, context);
+            return handleResponse({
+                status: false,
+                code: resolution.statusCode,
+                message: resolution.message
+            }, e, context);
         }
 
         var matchedRoute = resolution.route;
