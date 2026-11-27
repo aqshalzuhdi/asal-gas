@@ -1712,6 +1712,7 @@ function updateFrameworkFromRemote() {
         "creds.json",
         ".clasprc.json",
         "README.md",
+        "package.json",
         "package-lock.json"
     ]);
 
@@ -1740,7 +1741,10 @@ function updateFrameworkFromRemote() {
 
     if (!isReexec) {
         console.log(`🔄 Fetching latest changes from ${remoteName}/${branch}...`);
-        execSync(`git fetch --tags ${remoteName} ${branch}`, { cwd: ROOT_DIR, stdio: "inherit" });
+        execSync(
+            `git fetch --tags ${remoteName} +refs/heads/${branch}:refs/remotes/${remoteName}/${branch}`,
+            { cwd: ROOT_DIR, stdio: "inherit" }
+        );
     }
 
     const sourceRef = `${remoteName}/${branch}`;
