@@ -9,7 +9,11 @@ const MARKER_END = "# <<< asal-gas-cli <<<";
 function isShellConfigured(profilePath) {
     if (!profilePath || !fs.existsSync(profilePath)) return false;
     const content = fs.readFileSync(profilePath, "utf8");
-    return content.includes(MARKER_START) && content.includes("--no-deprecation");
+    return (
+        content.includes(MARKER_START) &&
+        content.includes("--no-deprecation") &&
+        content.includes("not found in this directory")
+    );
 }
 
 function getGlobalNpmBinDir() {
@@ -48,7 +52,7 @@ function buildDynamicNodeShimJs() {
         "}",
         "",
         "if (!targetGas) {",
-        "    console.error(\"❌ File 'gas' tidak ditemukan di direktori ini atau parent folder mana pun.\");",
+        "    console.error(\"❌ File 'gas' not found in this directory or any parent directory.\");",
         "    process.exit(1);",
         "}",
         "",
@@ -124,54 +128,6 @@ function ensureLocalProjectWrappers(projectRoot) {
     }
 }
 
-function setupWindowsCmdAndPath(silent = false) {
-    const shimDir = path.join(os.homedir(), ".asal-gas", "bin");
-    const resolverJs = path.join(shimDir, "asal-gas-resolver.js");
-    const shimCmd = path.join(shimDir, "gas.cmd");
-    const shimPosix = path.join(shimDir, "gas");
-
-    const expectedCmd = '@echo off\r\nnode --no-deprecation "%~dp0\\asal-gas-resolver.js" %*\r\n';
-    const currentCmd = fs.existsSync(shimCmd) ? fs.readFileSync(shimCmd, "utf8") : "";
-
-    const needsShimWrite =
-        !fs.existsSync(resolverJs) ||
-        !fs.existsSync(shimPosix) ||
-        currentCmd !== expectedCmd;
-
-    if (needsShimWrite) {
-        fs.mkdirSync(shimDir, { recursive: true });
-        fs.writeFileSync(resolverJs, buildDynamicNodeShimJs(), "utf8");
-        fs.writeFileSync(shimCmd, expectedCmd, "utf8");
-        fs.writeFileSync(
-            shimPosix,
-            '#!/bin/sh\nbasedir=$(dirname "$0")\nexec node --no-deprecation "$basedir/asal-gas-resolver.js" "$@"\n',
-            { encoding: "utf8", mode: 0o755 }
-        );
-    }
-
-    const psScript = [
-        `$target = '${shimDir.replace(/'/g, "''")}'`,
-        "$reg = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)",
-        "$raw = $reg.GetValue('Path', '', 'DoNotExpandEnvironmentNames')",
-        "$parts = @($raw -split ';' | Where-Object { $_ -and $_.Trim() -ne '' })",
-        "if ($parts.Count -eq 0 -or $parts[0].TrimEnd('\\') -ine $target.TrimEnd('\\')) {",
-        "    $filtered = @($parts | Where-Object { $_.TrimEnd('\\') -ine $target.TrimEnd('\\') })",
-        "    $newPath = (@($target) + $filtered) -join ';'",
-        "    $reg.SetValue('Path', $newPath, 'ExpandString')",
-        "    Write-Output 'UPDATED'",
-        "}",
-        "$reg.Close()"
-    ].join("; ");
-
-    const res = spawnSync("powershell", ["-NoProfile", "-Command", psScript], {
-        encoding: "utf8"
-    });
-
-    if (!silent && res.stdout && res.stdout.includes("UPDATED")) {
-        console.log(`✅ Windows CMD/Global PATH synced: ${shimDir}`);
-    }
-}
-
 function setupWindowsPowerShellProfile(silent = false) {
     const profileBlock = [
         MARKER_START,
@@ -186,7 +142,7 @@ function setupWindowsPowerShellProfile(silent = false) {
         "        if (-not $parent -or $parent -eq $dir) { break }",
         "        $dir = $parent",
         "    }",
-        '    Write-Error "File \'gas\' tidak ditemukan di direktori ini atau parent folder mana pun."',
+        '    Write-Error "File \'gas\' not found in this directory or any parent directory."',
         "}",
         MARKER_END
     ].join("\r\n");
@@ -256,7 +212,7 @@ function setupUnixShellProfiles(silent = false) {
         "        fi",
         '        dir="$parent"',
         "    done",
-        "    echo \"❌ File 'gas' tidak ditemukan di direktori ini atau parent folder mana pun.\" >&2",
+        "    echo \"❌ File 'gas' not found in this directory or any parent directory.\" >&2",
         "    return 1",
         "}",
         MARKER_END
@@ -312,7 +268,7 @@ function setupUnixShellProfiles(silent = false) {
             "        end",
             '        set dir "$parent"',
             "    end",
-            "    echo \"❌ File 'gas' tidak ditemukan di direktori ini atau parent folder mana pun.\" >&2",
+            "    echo \"❌ File 'gas' not found in this directory or any parent directory.\" >&2",
             "    return 1",
             "end",
             MARKER_END
@@ -341,7 +297,6 @@ function syncShellIntegration(silent = false, projectRoot = null) {
     neutralizeStaleNpmLinkShims();
 
     if (process.platform === "win32") {
-        setupWindowsCmdAndPath(silent);
         setupWindowsPowerShellProfile(silent);
     } else {
         setupUnixShellProfiles(silent);
