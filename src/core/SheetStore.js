@@ -999,19 +999,30 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
     }
 
     var paginationEnabled = false;
-    if (filters.start !== undefined && filters.length !== undefined) {
-        var start = Math.max(0, parseInt(filters.start, 10) || 0);
-        var length = parseInt(filters.length, 10);
+    var hasDtStart = filters.start !== undefined && filters.start !== null && String(filters.start).trim() !== "";
+    var hasDtLength = filters.length !== undefined && filters.length !== null && String(filters.length).trim() !== "";
+    var hasFilterPage = filters.page !== undefined && filters.page !== null && String(filters.page).trim() !== "";
+    var hasFilterPerPage = filters.per_page !== undefined && filters.per_page !== null && String(filters.per_page).trim() !== "";
+
+    if (hasDtStart || hasDtLength) {
+        var start = hasDtStart ? parseInt(filters.start, 10) : 0;
+        var length = hasDtLength ? parseInt(filters.length, 10) : 10;
         if (length === -1) {
             paginationEnabled = false;
             page = null;
             per_page = null;
-        } else if (length > 0) {
+        } else if (isNaN(start) || start < 0 || isNaN(length) || length < 1) {
+            return { status: false, message: "Invalid pagination parameters." };
+        } else {
             paginationEnabled = true;
             page = Math.floor(start / length) + 1;
             per_page = length;
         }
-    } else if (flt && flt.page !== undefined && flt.per_page !== undefined) {
+    } else if (hasFilterPage || hasFilterPerPage) {
+        paginationEnabled = true;
+        page = hasFilterPage ? filters.page : 1;
+        per_page = hasFilterPerPage ? filters.per_page : 15;
+    } else if (page !== null && page !== undefined && per_page !== null && per_page !== undefined) {
         paginationEnabled = true;
     }
 
