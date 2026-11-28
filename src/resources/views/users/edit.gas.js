@@ -5,7 +5,7 @@
 @section('content')
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h1 style="margin:0;">Edit User #{{ item.id }}</h1>
-        <a href="{{ url('/index') }}" style="color:#475569; text-decoration:none;">&larr; Kembali</a>
+        <a href="{{ url('/index') }}" style="color:#475569; text-decoration:none;">&larr; Back</a>
     </div>
 
     @if (typeof errorMessage !== 'undefined' && errorMessage)
@@ -19,13 +19,13 @@
         <input type="hidden" name="_method" value="PUT">
 
         <div>
-            <label for="name" style="display:block; font-weight:600; margin-bottom:6px;">Nama</label>
+            <label for="name" style="display:block; font-weight:600; margin-bottom:6px;">Name</label>
             <input
                 type="text"
                 id="name"
                 name="name"
                 value="{{ (typeof old !== 'undefined' && old.name !== undefined) ? old.name : item.name }}"
-                placeholder="Masukkan nama lengkap"
+                placeholder="Enter full name"
                 style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px;"
             >
             @if (typeof errors !== 'undefined' && errors.name)
@@ -40,7 +40,7 @@
                 id="username"
                 name="username"
                 value="{{ (typeof old !== 'undefined' && old.username !== undefined) ? old.username : (item.username || '') }}"
-                placeholder="Masukkan username untuk login"
+                placeholder="Enter login username"
                 style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px;"
             >
             @if (typeof errors !== 'undefined' && errors.username)
@@ -55,7 +55,7 @@
                 id="email"
                 name="email"
                 value="{{ (typeof old !== 'undefined' && old.email !== undefined) ? old.email : item.email }}"
-                placeholder="nama@domain.com"
+                placeholder="name@example.com"
                 style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px;"
             >
             @if (typeof errors !== 'undefined' && errors.email)
@@ -64,12 +64,12 @@
         </div>
 
         <div>
-            <label for="password" style="display:block; font-weight:600; margin-bottom:6px;">Password Baru <span style="font-weight:400; color:#64748b;">(opsional)</span></label>
+            <label for="password" style="display:block; font-weight:600; margin-bottom:6px;">New Password <span style="font-weight:400; color:#64748b;">(optional)</span></label>
             <input
                 type="password"
                 id="password"
                 name="password"
-                placeholder="Kosongkan jika tidak ingin mengubah password"
+                placeholder="Leave blank to keep current password"
                 style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px;"
             >
             @if (typeof errors !== 'undefined' && errors.password)
@@ -88,7 +88,7 @@
                 href="{{ url('/index') }}"
                 style="background:#e2e8f0; color:#1e293b; text-decoration:none; padding:10px 18px; border-radius:8px; font-weight:600;"
             >
-                Batal
+                Cancel
             </a>
         </div>
     </form>

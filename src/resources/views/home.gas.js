@@ -1,6 +1,6 @@
 @extends('layouts.app')
 
-@section('title', 'Beranda - ' + appName)
+@section('title', 'Home - ' + appName)
 
 @section('content')
     @if (typeof success !== 'undefined' && success)
@@ -16,13 +16,13 @@
     @endif
 
     <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h1 style="margin:0;">Selamat datang, {{ (typeof user !== 'undefined' && user && user.name) ? user.name : 'Developer' }}</h1>
+        <h1 style="margin:0;">Welcome, {{ (typeof user !== 'undefined' && user && user.name) ? user.name : 'Developer' }}</h1>
         <a href="{{ route('users.create') }}" style="background:#2563eb; color:#fff; text-decoration:none; padding:8px 14px; border-radius:8px; font-weight:600;">
-            + Tambah User
+            + Add User
         </a>
     </div>
 
-    <p>Endpoint API Users: <code>{{ apiUrl('/users') }}</code></p>
+    <p>Users API Endpoint: <code>{{ apiUrl('/users') }}</code></p>
 
     <ul style="list-style:none; padding:0; display:flex; flex-direction:column; gap:10px;">
         @forelse (items as item)
@@ -49,7 +49,7 @@
                     <form
                         method="POST"
                         action="{{ route('users.destroy', { id: item.id }) }}"
-                        onsubmit="return confirm('Yakin ingin menghapus user ini?');"
+                        onsubmit="return confirm('Are you sure you want to delete this user?');"
                         style="margin:0;"
                     >
                         @csrf
@@ -58,13 +58,13 @@
                             type="submit"
                             style="background:#dc2626; color:#fff; border:none; padding:6px 12px; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer;"
                         >
-                            Hapus
+                            Delete
                         </button>
                     </form>
                 </div>
             </li>
         @empty
-            <li>Belum ada data user.</li>
+            <li>No users found.</li>
         @endforelse
     </ul>
 @endsection

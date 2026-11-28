@@ -1,59 +1,50 @@
 class UserController extends Controller {
-    model = User;
-    with = [];
+    _extractInput(request) {
+        const nested = request.input("data");
+        const raw = (nested && typeof nested === "object")
+            ? Object.assign({}, nested)
+            : request.only(["id", "name", "username", "email", "password"]);
 
-    beforeStore(ctx) {
-        return this.validateAndPrepare(ctx, "create");
+        if (raw.name !== undefined && raw.name !== null) {
+            raw.name = String(raw.name).trim();
+        }
+        if (raw.username !== undefined && raw.username !== null) {
+            raw.username = String(raw.username).trim();
+        }
+        if (raw.email !== undefined && raw.email !== null) {
+            raw.email = String(raw.email).trim().toLowerCase();
+        }
+
+        delete raw.session;
+        delete raw.session_expires_at;
+
+        return raw;
     }
 
-    beforeUpdate(ctx) {
-        return this.validateAndPrepare(ctx, "update");
+    _resolveTargetId(request, routeId, inputData) {
+        if (routeId !== undefined && routeId !== null && routeId !== "") {
+            return routeId;
+        }
+        if (inputData && inputData.id !== undefined && inputData.id !== null && inputData.id !== "") {
+            return inputData.id;
+        }
+        return request.input("id");
     }
 
-    validateAndPrepare(ctx, mode) {
-        const payload = ctx.payload || {};
-        const data = payload.data;
+    index(request) {
+        return User.datatable(request);
+    }
 
-        if (!data || typeof data !== "object") {
-            return { status: false, code: 422, message: "Payload data is required." };
-        }
+    store(request) {
+        const data = this._extractInput(request);
 
-        if (mode === "update" && (data.id === undefined || data.id === null || data.id === "")) {
-            const resolvedId = (ctx.routeParams && ctx.routeParams.id) ||
-                payload.id ||
-                (ctx.params && ctx.params.id);
-            if (resolvedId !== undefined && resolvedId !== null && resolvedId !== "") {
-                data.id = resolvedId;
-            }
-        }
+        const validation = Validator.make(data, {
+            name: "nullable|string|max:100",
+            username: "required|string|min:3|max:50|unique:users,username",
+            email: "nullable|email|unique:users,email",
+            password: "required|string|min:6"
+        });
 
-        if (data.name !== undefined && data.name !== null) {
-            data.name = String(data.name).trim();
-        }
-        if (data.username !== undefined && data.username !== null) {
-            data.username = String(data.username).trim();
-        }
-        if (data.email !== undefined && data.email !== null) {
-            data.email = String(data.email).trim().toLowerCase();
-        }
-
-        const exceptId = mode === "update" && data.id !== undefined ? data.id : "";
-        const rules = mode === "create"
-            ? {
-                name: "nullable|string|max:100",
-                username: "required|string|min:3|max:50|unique:users,username",
-                email: "nullable|email|unique:users,email",
-                password: "required|string|min:6"
-            }
-            : {
-                id: "required",
-                name: "nullable|string|max:100",
-                username: "nullable|string|min:3|max:50|unique:users,username," + exceptId,
-                email: "nullable|email|unique:users,email," + exceptId,
-                password: "nullable|string|min:6"
-            };
-
-        const validation = Validator.make(data, rules);
         if (validation.fails()) {
             return {
                 status: false,
@@ -63,8 +54,55 @@ class UserController extends Controller {
             };
         }
 
-        delete data.session;
-        delete data.session_expires_at;
+        data.password = Hash.make(String(data.password));
+        return User.create(data);
+    }
+
+    show(request, id) {
+        const targetId = this._resolveTargetId(request, id, null);
+        const user = User.find(targetId);
+
+        if (!user) {
+            return failResponse("User not found.", 404);
+        }
+
+        return {
+            status: true,
+            code: 200,
+            data: user
+        };
+    }
+
+    update(request, id) {
+        const data = this._extractInput(request);
+        const targetId = this._resolveTargetId(request, id, data);
+
+        if (targetId === undefined || targetId === null || targetId === "") {
+            return failResponse("User ID is required.", 422);
+        }
+
+        const user = User.find(targetId);
+        if (!user) {
+            return failResponse("User not found.", 404);
+        }
+
+        const validation = Validator.make(data, {
+            name: "nullable|string|max:100",
+            username: "nullable|string|min:3|max:50|unique:users,username," + user.id,
+            email: "nullable|email|unique:users,email," + user.id,
+            password: "nullable|string|min:6"
+        });
+
+        if (validation.fails()) {
+            return {
+                status: false,
+                code: 422,
+                message: validation.firstError(),
+                errors: validation.errors()
+            };
+        }
+
+        delete data.id;
 
         if (data.password !== undefined && data.password !== null && String(data.password).trim() !== "") {
             data.password = Hash.make(String(data.password));
@@ -72,6 +110,22 @@ class UserController extends Controller {
             delete data.password;
         }
 
-        return { status: true };
+        return User.update(user.id, data);
+    }
+
+    destroy(request, id) {
+        const nested = request.input("data");
+        const targetId = this._resolveTargetId(request, id, nested);
+
+        if (targetId === undefined || targetId === null || targetId === "") {
+            return failResponse("User ID is required.", 422);
+        }
+
+        const user = User.find(targetId);
+        if (!user) {
+            return failResponse("User not found.", 404);
+        }
+
+        return User.destroy(user.id);
     }
 }

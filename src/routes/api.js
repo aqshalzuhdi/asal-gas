@@ -15,6 +15,6 @@ function registerRoutes() {
         Route.post("logout", "AuthController@logout");
         Route.get("verify", "AuthController@verifySession");
 
-        Route.resource("users", "UserController");
+        Route.apiResource("users", "UserController");
     });
 }

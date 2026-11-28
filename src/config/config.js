@@ -110,87 +110,30 @@ const CONFIG = {
 
     get APP_KEY() {
         return this.getOptional("APP_KEY", "");
-    },
-};
-
-var WorkspaceSetup = {
-    DEFAULT_SPREADSHEET_NAME: "Asal-GAS Database",
-
-    init: function (options) {
-        if (typeof ScriptApp === "undefined") {
-            return { status: false, message: "This setup can only run inside Google Apps Script." };
-        }
-
-        options = (options && typeof options === "object") ? options : {};
-        var lock = LockService.getScriptLock();
-        lock.waitLock(30000);
-
-        try {
-            if (options.env && typeof EnvSync !== "undefined") {
-                EnvSync.apply(options.env, typeof CONFIG !== "undefined" ? CONFIG : null);
-            }
-
-            var props = PropertiesService.getScriptProperties();
-            var sheetId = String(props.getProperty("SHEET_ID") || "").trim();
-            var baseUrl = String(props.getProperty("BASE_URL") || "").trim();
-            var isFirstSetup = false;
-
-            if (!sheetId) {
-                var appName = (typeof CONFIG !== "undefined" && CONFIG.has("APP_NAME"))
-                    ? CONFIG.get("APP_NAME") + " - Database"
-                    : this.DEFAULT_SPREADSHEET_NAME;
-
-                var newSs = SpreadsheetApp.create(appName);
-                sheetId = newSs.getId();
-                props.setProperty("SHEET_ID", sheetId);
-                isFirstSetup = true;
-            }
-
-            var serviceUrl = "";
-            try {
-                serviceUrl = ScriptApp.getService().getUrl() || "";
-            } catch (_) { }
-
-            if (options.webAppUrl && baseUrl !== options.webAppUrl) {
-                baseUrl = String(options.webAppUrl).trim();
-                props.setProperty("BASE_URL", baseUrl);
-            } else if (!baseUrl && serviceUrl.indexOf("/exec") !== -1) {
-                baseUrl = serviceUrl;
-                props.setProperty("BASE_URL", baseUrl);
-            }
-
-            if (typeof CONFIG !== "undefined") {
-                if (CONFIG._runtime) {
-                    CONFIG._runtime.SHEET_ID = sheetId;
-                    if (baseUrl) CONFIG._runtime.BASE_URL = baseUrl;
-                }
-                if ("_propsCache" in CONFIG) {
-                    CONFIG._propsCache = null;
-                }
-            }
-
-            var shouldMigrate = options.migrate === undefined ? true : Boolean(options.migrate);
-            var shouldSeed = Boolean(options.seed);
-
-            var migrationRes = (shouldMigrate && typeof migrate === "function") ? migrate() : null;
-            var seederRes = (shouldSeed && typeof dbSeed === "function") ? dbSeed() : null;
-
-            return {
-                status: true,
-                first_setup: isFirstSetup,
-                SHEET_ID: sheetId,
-                SHEET_URL: sheetId ? "https://docs.google.com/spreadsheets/d/" + sheetId + "/edit" : "",
-                BASE_URL: baseUrl,
-                APP_KEY: String(props.getProperty("APP_KEY") || ""),
-                migration: migrationRes,
-                seeder: seederRes
-            };
-        } finally {
-            lock.releaseLock();
-        }
     }
 };
 
-function setupWorkspace(options) {
-    return WorkspaceSetup.init(options);
+function generateAppKey() {
+    if (
+        typeof Utilities !== "undefined" &&
+        typeof Utilities.computeDigest === "function" &&
+        typeof Utilities.getUuid === "function" &&
+        typeof Utilities.base64Encode === "function"
+    ) {
+        var seedA = Utilities.getUuid() + ":" + Date.now() + ":" + Math.random();
+        var seedB = Utilities.getUuid() + ":" + Math.random() + ":" + new Date().toISOString();
+        var digestA = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, seedA);
+        var digestB = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, seedB);
+        var bytes = [];
+        for (var i = 0; i < 16; i++) bytes.push(digestA[i]);
+        for (var j = 0; j < 16; j++) bytes.push(digestB[j]);
+        return "base64:" + Utilities.base64Encode(bytes);
+    }
+
+    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var token = "";
+    for (var k = 0; k < 43; k++) {
+        token += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return "base64:" + token + "=";
 }

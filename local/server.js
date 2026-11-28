@@ -83,7 +83,10 @@ if (fs.existsSync(viewsWatchDir)) {
 const server = http.createServer((req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, X-Requested-With");
+    res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, Accept, X-Requested-With, X-Session-Key, X-CSRF-Token, X-XSRF-Token"
+    );
 
     if (req.method === "OPTIONS") {
         res.writeHead(204);
@@ -114,6 +117,10 @@ const server = http.createServer((req, res) => {
 
     if (!query.route && cleanPath) {
         query.route = cleanPath;
+    }
+
+    if (req.method !== "GET" && req.method !== "POST" && !query._method) {
+        query._method = req.method;
     }
 
     let body = "";

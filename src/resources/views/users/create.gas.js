@@ -1,11 +1,11 @@
 @extends('layouts.app')
 
-@section('title', 'Tambah User - ' + appName)
+@section('title', 'Add User - ' + appName)
 
 @section('content')
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-        <h1 style="margin:0;">Tambah User Baru</h1>
-        <a href="{{ url('/index') }}" style="color:#475569; text-decoration:none;">&larr; Kembali</a>
+        <h1 style="margin:0;">Add New User</h1>
+        <a href="{{ url('/index') }}" style="color:#475569; text-decoration:none;">&larr; Back</a>
     </div>
 
     @if (typeof success !== 'undefined' && success)
@@ -23,13 +23,13 @@
     <form method="POST" action="{{ url('/users') }}" style="display:flex; flex-direction:column; gap:14px;">
         @csrf
         <div>
-            <label for="name" style="display:block; font-weight:600; margin-bottom:6px;">Nama</label>
+            <label for="name" style="display:block; font-weight:600; margin-bottom:6px;">Name</label>
             <input
                 type="text"
                 id="name"
                 name="name"
                 value="{{ (typeof old !== 'undefined' && old.name) ? old.name : '' }}"
-                placeholder="Masukkan nama lengkap"
+                placeholder="Enter full name"
                 style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px;"
             >
             @if (typeof errors !== 'undefined' && errors.name)
@@ -44,7 +44,7 @@
                 id="username"
                 name="username"
                 value="{{ (typeof old !== 'undefined' && old.username) ? old.username : '' }}"
-                placeholder="Masukkan username untuk login"
+                placeholder="Enter login username"
                 style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px;"
             >
             @if (typeof errors !== 'undefined' && errors.username)
@@ -59,7 +59,7 @@
                 id="email"
                 name="email"
                 value="{{ (typeof old !== 'undefined' && old.email) ? old.email : '' }}"
-                placeholder="nama@domain.com"
+                placeholder="name@example.com"
                 style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px;"
             >
             @if (typeof errors !== 'undefined' && errors.email)
@@ -73,7 +73,7 @@
                 type="password"
                 id="password"
                 name="password"
-                placeholder="Minimal 6 karakter"
+                placeholder="Minimum 6 characters"
                 style="width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #cbd5e1; border-radius:8px;"
             >
             @if (typeof errors !== 'undefined' && errors.password)
@@ -86,13 +86,13 @@
                 type="submit"
                 style="background:#2563eb; color:#fff; border:none; padding:10px 18px; border-radius:8px; font-weight:600; cursor:pointer;"
             >
-                Simpan User
+                Save User
             </button>
             <a
                 href="{{ url('/index') }}"
                 style="background:#e2e8f0; color:#1e293b; text-decoration:none; padding:10px 18px; border-radius:8px; font-weight:600;"
             >
-                Batal
+                Cancel
             </a>
         </div>
     </form>

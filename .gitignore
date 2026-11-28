@@ -6,4 +6,4 @@ creds.json
 local/storage/*.json
 !local/storage/.gitkeep
 .DS_Store
-src/core/Core_Views_Compiled.js
+src/core/CompiledViews.js

@@ -18,14 +18,31 @@ function isShellConfigured(profilePath) {
 
 function getGlobalNpmBinDir() {
     const isWin = process.platform === "win32";
-    const probe = isWin
-        ? spawnSync("npm.cmd prefix -g", { encoding: "utf8", shell: true })
-        : spawnSync("npm", ["prefix", "-g"], { encoding: "utf8" });
+    const probe = spawnSync("npm", ["prefix", "-g"], {
+        encoding: "utf8",
+        shell: isWin
+    });
 
     if (probe.status !== 0 || !probe.stdout) return null;
     const prefix = probe.stdout.trim();
     if (!prefix) return null;
     return isWin ? prefix : path.join(prefix, "bin");
+}
+
+function findNearestProjectRoot(startDir) {
+    let dir = path.resolve(startDir || process.cwd());
+    while (true) {
+        const candidate = path.join(dir, "gas");
+        try {
+            if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+                return dir;
+            }
+        } catch (_) { }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    return null;
 }
 
 function buildDynamicNodeShimJs() {
@@ -290,8 +307,9 @@ function setupUnixShellProfiles(silent = false) {
 }
 
 function syncShellIntegration(silent = false, projectRoot = null) {
-    if (projectRoot) {
-        ensureLocalProjectWrappers(projectRoot);
+    const resolvedRoot = projectRoot || findNearestProjectRoot(process.cwd()) || findNearestProjectRoot(path.resolve(__dirname, "../.."));
+    if (resolvedRoot) {
+        ensureLocalProjectWrappers(resolvedRoot);
     }
 
     neutralizeStaleNpmLinkShims();

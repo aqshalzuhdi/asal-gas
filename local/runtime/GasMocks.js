@@ -4,7 +4,7 @@ const crypto = require("crypto");
 const { execFileSync } = require("child_process");
 
 const STORAGE_DIR = path.join(__dirname, "../storage");
-const SRC_DIR = path.join(__dirname, "../../src");
+const SRC_DIR = path.resolve(__dirname, "../../src");
 const DB_FILE = path.join(STORAGE_DIR, "db.json");
 const PROPS_FILE = path.join(STORAGE_DIR, "properties.json");
 
@@ -16,8 +16,17 @@ function ensureStorage() {
     if (!fs.existsSync(PROPS_FILE)) {
         fs.writeFileSync(PROPS_FILE, JSON.stringify({
             SHEET_ID: "local-dev-sheet-id",
-            BASE_URL: "http://localhost:3000"
+            BASE_URL: "http://localhost:3000",
+            APP_KEY: crypto.randomBytes(32).toString("hex")
         }, null, 2));
+    } else {
+        try {
+            const current = JSON.parse(fs.readFileSync(PROPS_FILE, "utf8"));
+            if (!current.APP_KEY || String(current.APP_KEY).trim() === "") {
+                current.APP_KEY = crypto.randomBytes(32).toString("hex");
+                fs.writeFileSync(PROPS_FILE, JSON.stringify(current, null, 2));
+            }
+        } catch (_) { }
     }
 }
 
@@ -37,6 +46,12 @@ function toSignedBytes(buf) {
 
 function fromSignedBytes(arr) {
     return Buffer.from(arr.map((b) => b & 0xff));
+}
+
+function toBufferInput(value) {
+    if (Array.isArray(value)) return fromSignedBytes(value);
+    if (Buffer.isBuffer(value)) return value;
+    return Buffer.from(String(value ?? ""), "utf8");
 }
 
 class RangeMock {
@@ -62,6 +77,11 @@ class RangeMock {
         return out;
     }
 
+    getValue() {
+        const vals = this.getValues();
+        return vals[0] && vals[0][0] !== undefined ? vals[0][0] : "";
+    }
+
     setValues(values) {
         const rows = this.sheet._rows();
         for (let r = 0; r < values.length; r++) {
@@ -82,10 +102,23 @@ class RangeMock {
         return this;
     }
 
+    clearContent() {
+        const rows = this.sheet._rows();
+        for (let r = 0; r < this.numRows; r++) {
+            if (!rows[this.row - 1 + r]) continue;
+            for (let c = 0; c < this.numCols; c++) {
+                rows[this.row - 1 + r][this.col - 1 + c] = "";
+            }
+        }
+        this.sheet._save(rows);
+        return this;
+    }
+
     setFontWeight() { return this; }
     setBackground() { return this; }
     setFontColor() { return this; }
     setVerticalAlignment() { return this; }
+    setHorizontalAlignment() { return this; }
     setNumberFormat() { return this; }
 }
 
@@ -111,6 +144,9 @@ class SheetMock {
         const rows = this._rows();
         return rows.length > 0 ? rows[0].length : 0;
     }
+    getMaxRows() {
+        return Math.max(this.getLastRow(), 1000);
+    }
     getMaxColumns() {
         return Math.max(this.getLastColumn(), 26);
     }
@@ -128,6 +164,12 @@ class SheetMock {
     deleteRow(rowIndex) {
         const rows = this._rows();
         rows.splice(rowIndex - 1, 1);
+        this._save(rows);
+    }
+
+    deleteRows(rowPosition, howMany = 1) {
+        const rows = this._rows();
+        rows.splice(rowPosition - 1, howMany);
         this._save(rows);
     }
 
@@ -149,6 +191,17 @@ class SheetMock {
 
     deleteColumns() { }
     setFrozenRows() { }
+    autoResizeColumns() { return this; }
+
+    clear() {
+        this._save([]);
+        return this;
+    }
+
+    clearContents() {
+        this._save([]);
+        return this;
+    }
 
     setName(newName) {
         const db = readDb();
@@ -161,12 +214,31 @@ class SheetMock {
 
 const memoryCache = new Map();
 
-function installGasGlobals() {
-    ensureStorage();
+function readCacheEntry(key) {
+    if (!memoryCache.has(key)) return null;
+    const entry = memoryCache.get(key);
+    if (entry && typeof entry === "object" && Object.prototype.hasOwnProperty.call(entry, "value")) {
+        if (entry.expiresAt && Date.now() >= entry.expiresAt) {
+            memoryCache.delete(key);
+            return null;
+        }
+        return entry.value;
+    }
+    return String(entry);
+}
 
-    const spreadsheetMock = {
-        getId: () => "local-dev-sheet-id",
+function writeCacheEntry(key, val, expirationInSeconds) {
+    const ttl = Number(expirationInSeconds);
+    const expiresAt = Number.isFinite(ttl) && ttl > 0 ? Date.now() + ttl * 1000 : null;
+    memoryCache.set(key, { value: String(val), expiresAt });
+}
+
+function buildSpreadsheetMock(spreadsheetId = "local-dev-sheet-id") {
+    return {
+        getId: () => spreadsheetId || "local-dev-sheet-id",
+        getName: () => "Asal-GAS Local Spreadsheet",
         getUrl: () => "http://localhost:3000/local-db",
+        toast: () => { },
         getSheetByName: (name) => {
             const db = readDb();
             return Object.prototype.hasOwnProperty.call(db.sheets, name) ? new SheetMock(name) : null;
@@ -186,11 +258,15 @@ function installGasGlobals() {
         },
         getSheets: () => Object.keys(readDb().sheets).map((n) => new SheetMock(n))
     };
+}
+
+function installGasGlobals() {
+    ensureStorage();
 
     global.SpreadsheetApp = {
-        openById: () => spreadsheetMock,
-        getActiveSpreadsheet: () => spreadsheetMock,
-        create: () => spreadsheetMock
+        openById: (id) => buildSpreadsheetMock(id || "local-dev-sheet-id"),
+        getActiveSpreadsheet: () => buildSpreadsheetMock("local-dev-sheet-id"),
+        create: () => buildSpreadsheetMock("local-dev-sheet-id")
     };
 
     global.PropertiesService = {
@@ -241,17 +317,36 @@ function installGasGlobals() {
 
     global.CacheService = {
         getScriptCache: () => ({
-            get: (k) => (memoryCache.has(k) ? memoryCache.get(k) : null),
+            get: (k) => readCacheEntry(k),
             getAll: (keys) => {
                 const res = {};
-                keys.forEach((k) => { if (memoryCache.has(k)) res[k] = memoryCache.get(k); });
+                keys.forEach((k) => {
+                    const val = readCacheEntry(k);
+                    if (val !== null) res[k] = val;
+                });
                 return res;
             },
-            put: (k, v) => { memoryCache.set(k, String(v)); },
-            putAll: (obj) => { Object.keys(obj).forEach((k) => memoryCache.set(k, String(obj[k]))); },
+            put: (k, v, expirationInSeconds) => {
+                writeCacheEntry(k, v, expirationInSeconds);
+            },
+            putAll: (obj, expirationInSeconds) => {
+                Object.keys(obj).forEach((k) => writeCacheEntry(k, obj[k], expirationInSeconds));
+            },
             remove: (k) => { memoryCache.delete(k); },
             removeAll: (keys) => { keys.forEach((k) => memoryCache.delete(k)); }
         })
+    };
+
+    global.LockService = {
+        getScriptLock: () => {
+            let locked = false;
+            return {
+                tryLock: () => { locked = true; return true; },
+                waitLock: () => { locked = true; },
+                hasLock: () => locked,
+                releaseLock: () => { locked = false; }
+            };
+        }
     };
 
     global.ContentService = {
@@ -267,13 +362,17 @@ function installGasGlobals() {
 
     global.HtmlService = {
         XFrameOptionsMode: { ALLOWALL: "ALLOWALL", DEFAULT: "DEFAULT" },
+        SandboxMode: { IFRAME: "IFRAME", EMULATED: "EMULATED" },
         createHtmlOutput: (html = "") => ({
             _content: String(html),
             _title: "",
             _statusCode: 200,
+            _metaTags: [],
             setTitle(t) { this._title = String(t); return this; },
             getTitle() { return this._title; },
             setXFrameOptionsMode() { return this; },
+            setSandboxMode() { return this; },
+            addMetaTag(name, content) { this._metaTags.push({ name, content }); return this; },
             getMimeType() { return "HTML"; },
             getContent() { return this._content; }
         })
@@ -297,25 +396,43 @@ function installGasGlobals() {
     };
 
     global.Utilities = {
-        DigestAlgorithm: { SHA_256: "sha256", SHA_512: "sha512", MD5: "md5" },
+        DigestAlgorithm: { SHA_256: "sha256", SHA_384: "sha384", SHA_512: "sha512", MD5: "md5" },
+        Charset: { UTF_8: "UTF-8", US_ASCII: "US-ASCII" },
         getUuid: () => crypto.randomUUID(),
-        newBlob: (str) => ({
-            getBytes: () => toSignedBytes(Buffer.from(String(str), "utf8"))
-        }),
+        newBlob: (data, contentType = "text/plain", name = "") => {
+            const buf = toBufferInput(data);
+            return {
+                getBytes: () => toSignedBytes(buf),
+                getDataAsString: (charset) => buf.toString(charset && String(charset).toLowerCase() === "us-ascii" ? "ascii" : "utf8"),
+                getContentType: () => contentType,
+                getName: () => name
+            };
+        },
         computeDigest: (algo, value) => {
-            const buf = Array.isArray(value) ? fromSignedBytes(value) : Buffer.from(String(value), "utf8");
+            const buf = toBufferInput(value);
             return toSignedBytes(crypto.createHash(algo).update(buf).digest());
         },
         computeHmacSha256Signature: (inputBytes, keyBytes) => {
-            const dataBuf = Array.isArray(inputBytes) ? fromSignedBytes(inputBytes) : Buffer.from(String(inputBytes), "utf8");
-            const keyBuf = Array.isArray(keyBytes) ? fromSignedBytes(keyBytes) : Buffer.from(String(keyBytes), "utf8");
+            const dataBuf = toBufferInput(inputBytes);
+            const keyBuf = toBufferInput(keyBytes);
             return toSignedBytes(crypto.createHmac("sha256", keyBuf).update(dataBuf).digest());
         },
         base64Encode: (data) => {
-            const buf = Array.isArray(data) ? fromSignedBytes(data) : Buffer.from(String(data), "utf8");
-            return buf.toString("base64");
+            return toBufferInput(data).toString("base64");
         },
         base64Decode: (b64) => toSignedBytes(Buffer.from(String(b64), "base64")),
+        base64EncodeWebSafe: (data) => {
+            return toBufferInput(data)
+                .toString("base64")
+                .replace(/\+/g, "-")
+                .replace(/\//g, "_");
+        },
+        base64DecodeWebSafe: (b64) => {
+            const normalized = String(b64)
+                .replace(/-/g, "+")
+                .replace(/_/g, "/");
+            return toSignedBytes(Buffer.from(normalized, "base64"));
+        },
         formatDate: (dateObj, tz, format) => {
             const d = new Date(dateObj);
             const pad = (n) => String(n).padStart(2, "0");

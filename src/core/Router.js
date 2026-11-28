@@ -119,6 +119,18 @@ var Route = (function () {
         return typeof target === "object" ? target : null;
     }
 
+    function invokeControllerMethod(ctrlObj, methodName, ctx, extraArgs) {
+        var routeValues = [];
+        if (ctx && ctx.routeParams && typeof ctx.routeParams === "object") {
+            var keys = Object.keys(ctx.routeParams);
+            for (var i = 0; i < keys.length; i++) {
+                routeValues.push(ctx.routeParams[keys[i]]);
+            }
+        }
+        var callArgs = [ctx].concat(routeValues).concat(extraArgs || []);
+        return ctrlObj[methodName].apply(ctrlObj, callArgs);
+    }
+
     function resolveHandler(handlerSpec) {
         if (!handlerSpec) return null;
 
@@ -126,7 +138,16 @@ var Route = (function () {
             if (typeof Controller !== "undefined" && handlerSpec.prototype instanceof Controller) {
                 return null;
             }
-            return handlerSpec;
+            return function (ctx) {
+                var routeValues = [];
+                if (ctx && ctx.routeParams && typeof ctx.routeParams === "object") {
+                    var keys = Object.keys(ctx.routeParams);
+                    for (var i = 0; i < keys.length; i++) {
+                        routeValues.push(ctx.routeParams[keys[i]]);
+                    }
+                }
+                return handlerSpec.apply(null, [ctx].concat(routeValues));
+            };
         }
 
         if (Array.isArray(handlerSpec)) {
@@ -138,7 +159,7 @@ var Route = (function () {
             if (!arrMethod || typeof arrCtrl[arrMethod] !== "function") return null;
 
             return function (ctx) {
-                return arrCtrl[arrMethod](ctx);
+                return invokeControllerMethod(arrCtrl, arrMethod, ctx, []);
             };
         }
 
@@ -154,7 +175,7 @@ var Route = (function () {
             if (typeof ctrlObj[methodName] !== "function") return null;
 
             return function (ctx) {
-                return ctrlObj[methodName](ctx);
+                return invokeControllerMethod(ctrlObj, methodName, ctx, []);
             };
         }
 
@@ -165,8 +186,7 @@ var Route = (function () {
             if (typeof targetCtrl[handlerSpec.method] !== "function") return null;
 
             return function (ctx) {
-                var callArgs = [ctx].concat(handlerSpec.args || []);
-                return targetCtrl[handlerSpec.method].apply(targetCtrl, callArgs);
+                return invokeControllerMethod(targetCtrl, handlerSpec.method, ctx, handlerSpec.args || []);
             };
         }
 
@@ -247,7 +267,7 @@ var Route = (function () {
             options: opts
         };
 
-        if (opts.name) {
+        if (opts.name && !_namedRoutes[String(opts.name).trim()]) {
             _namedRoutes[String(opts.name).trim()] = cleanRoute;
         }
 
@@ -290,8 +310,10 @@ var Route = (function () {
         return null;
     }
 
-    function resolveResourceAbilities(opts) {
-        var all = ["index", "store", "update", "destroy", "restore", "forceDelete"];
+    function resolveResourceAbilities(opts, isApiOnly) {
+        var all = isApiOnly
+            ? ["index", "store", "show", "update", "destroy"]
+            : ["index", "create", "store", "show", "edit", "update", "destroy"];
 
         function expandTokens(list) {
             var map = {};
@@ -300,14 +322,15 @@ var Route = (function () {
                 var upper = token.toUpperCase();
                 if (upper === "GET") {
                     map.index = true;
+                    map.show = true;
+                    if (!isApiOnly) {
+                        map.create = true;
+                        map.edit = true;
+                    }
                 } else if (upper === "POST") {
                     map.store = true;
                     map.update = true;
                     map.destroy = true;
-                    map.restore = true;
-                    map.forceDelete = true;
-                } else if (token === "force-delete") {
-                    map.forceDelete = true;
                 } else if (all.indexOf(token) !== -1) {
                     map[token] = true;
                 }
@@ -326,6 +349,116 @@ var Route = (function () {
         }
 
         return all;
+    }
+
+    function registerResourceRoutes(routeName, controller, options, isApiOnly) {
+        var ctrl = controller;
+        var baseFlag = isApiOnly ? { _isResource: true, _isApi: true } : { _isResource: true };
+        var opts = Object.assign({}, options || {}, baseFlag);
+
+        if (
+            ctrl &&
+            typeof ctrl === "object" &&
+            !Array.isArray(ctrl) &&
+            typeof ctrl.index !== "function" &&
+            typeof ctrl.store !== "function"
+        ) {
+            opts = Object.assign({}, ctrl, baseFlag);
+            ctrl = null;
+        }
+
+        var cleanBase = normalizeRoutePath(routeName);
+        var resourcePrefix = opts.as || cleanBase.split("/").pop();
+        var abilities = resolveResourceAbilities(opts, isApiOnly);
+        var registeredRefs = [];
+
+        function addResRoute(methods, path, methodName, actionName, routeAlias) {
+            var routeOptions = Object.assign({}, opts, {
+                action: actionName || null,
+                name: routeAlias || null
+            });
+            var builder = register(methods, path, {
+                controller: ctrl,
+                method: methodName
+            }, routeOptions);
+            return builder;
+        }
+
+        if (abilities.indexOf("index") !== -1) {
+            addResRoute(["GET"], cleanBase, "index", null, resourcePrefix ? resourcePrefix + ".index" : null);
+        }
+
+        if (!isApiOnly && abilities.indexOf("create") !== -1) {
+            addResRoute(["GET"], cleanBase + "/create", "create", null, resourcePrefix ? resourcePrefix + ".create" : null);
+        }
+
+        if (abilities.indexOf("store") !== -1) {
+            addResRoute(["POST"], cleanBase, "store", "create", resourcePrefix ? resourcePrefix + ".store" : null);
+            addResRoute(["POST"], cleanBase, "store", null, null);
+        }
+
+        if (abilities.indexOf("show") !== -1) {
+            addResRoute(["GET"], cleanBase + "/:id", "show", null, resourcePrefix ? resourcePrefix + ".show" : null);
+        }
+
+        if (!isApiOnly && abilities.indexOf("edit") !== -1) {
+            addResRoute(["GET"], cleanBase + "/:id/edit", "edit", null, resourcePrefix ? resourcePrefix + ".edit" : null);
+        }
+
+        if (abilities.indexOf("update") !== -1) {
+            addResRoute(["PUT", "PATCH"], cleanBase + "/:id", "update", null, resourcePrefix ? resourcePrefix + ".update" : null);
+            addResRoute(["POST"], cleanBase + "/:id", "update", "update", null);
+            addResRoute(["POST"], cleanBase + "/:id", "update", null, null);
+            addResRoute(["POST"], cleanBase, "update", "update", null);
+        }
+
+        if (abilities.indexOf("destroy") !== -1) {
+            addResRoute(["DELETE"], cleanBase + "/:id", "destroy", null, resourcePrefix ? resourcePrefix + ".destroy" : null);
+            addResRoute(["POST"], cleanBase + "/:id", "destroy", "delete", null);
+            addResRoute(["POST"], cleanBase, "destroy", "delete", null);
+        }
+
+        return Route;
+    }
+
+    function inferControllerSheetLabel(controllerRef) {
+        if (!controllerRef) return "-";
+
+        if (typeof Model !== "undefined" && typeof Model.extractModelsFromTarget === "function") {
+            var discovered = Model.extractModelsFromTarget(controllerRef);
+            if (discovered.length > 0) {
+                return discovered.map(function (item) {
+                    return item.error
+                        ? item.table + " [Model Error: " + item.error + "]"
+                        : item.table;
+                }).join(", ");
+            }
+        }
+
+        var rawName = "";
+        if (typeof controllerRef === "string") {
+            rawName = controllerRef.trim();
+        } else if (typeof controllerRef === "function" && controllerRef.name) {
+            rawName = controllerRef.name;
+        } else if (typeof controllerRef === "object" && controllerRef.constructor && controllerRef.constructor.name) {
+            rawName = controllerRef.constructor.name;
+        }
+
+        if (rawName && rawName !== "Controller" && rawName !== "Object") {
+            var stripped = rawName.replace(/Controller$/i, "");
+            if (stripped) {
+                var snake = stripped
+                    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+                    .replace(/[^a-zA-Z0-9]+/g, "_")
+                    .replace(/^_+|_+$/g, "")
+                    .toLowerCase();
+                if (/[^aeiou]y$/.test(snake)) return snake.replace(/y$/, "ies");
+                if (/(s|x|z|ch|sh)$/.test(snake)) return snake + "es";
+                return snake + "s";
+            }
+        }
+
+        return "-";
     }
 
     return {
@@ -399,83 +532,11 @@ var Route = (function () {
         },
 
         resource: function (routeName, controller, options) {
-            var ctrl = controller;
-            var opts = Object.assign({}, options || {}, { _isResource: true, _isApi: true });
+            return registerResourceRoutes(routeName, controller, options, false);
+        },
 
-            if (
-                ctrl &&
-                typeof ctrl === "object" &&
-                !Array.isArray(ctrl) &&
-                typeof ctrl.index !== "function" &&
-                typeof ctrl.store !== "function"
-            ) {
-                opts = Object.assign({}, ctrl, { _isResource: true, _isApi: true });
-                ctrl = null;
-            }
-
-            var abilities = resolveResourceAbilities(opts);
-
-            if (abilities.indexOf("index") !== -1) {
-                register(["GET"], routeName, {
-                    controller: ctrl,
-                    method: "index",
-                    args: [opts]
-                }, Object.assign({}, opts, { action: null }));
-            }
-
-            if (abilities.indexOf("store") !== -1) {
-                register(["POST"], routeName, {
-                    controller: ctrl,
-                    method: "store",
-                    args: [opts]
-                }, Object.assign({}, opts, { action: "create" }));
-            }
-
-            if (abilities.indexOf("update") !== -1) {
-                register(["POST"], routeName, {
-                    controller: ctrl,
-                    method: "update",
-                    args: [opts]
-                }, Object.assign({}, opts, { action: "update" }));
-
-                register(["PUT", "PATCH"], routeName, {
-                    controller: ctrl,
-                    method: "update",
-                    args: [opts]
-                }, Object.assign({}, opts, { action: null }));
-            }
-
-            if (abilities.indexOf("destroy") !== -1) {
-                register(["POST"], routeName, {
-                    controller: ctrl,
-                    method: "destroy",
-                    args: [opts]
-                }, Object.assign({}, opts, { action: "delete" }));
-
-                register(["DELETE"], routeName, {
-                    controller: ctrl,
-                    method: "destroy",
-                    args: [opts]
-                }, Object.assign({}, opts, { action: null }));
-            }
-
-            if (abilities.indexOf("restore") !== -1) {
-                register(["POST", "PUT", "PATCH"], routeName, {
-                    controller: ctrl,
-                    method: "restore",
-                    args: [opts]
-                }, Object.assign({}, opts, { action: "restore" }));
-            }
-
-            if (abilities.indexOf("forceDelete") !== -1) {
-                register(["POST", "DELETE"], routeName, {
-                    controller: ctrl,
-                    method: "forceDelete",
-                    args: [opts]
-                }, Object.assign({}, opts, { action: "force-delete" }));
-            }
-
-            return Route;
+        apiResource: function (routeName, controller, options) {
+            return registerResourceRoutes(routeName, controller, options, true);
         },
 
         resolveName: function (name) {
@@ -661,30 +722,13 @@ var Route = (function () {
                         controllerRef = entry.handlerSpec.controller;
                         var ctrlName = typeof controllerRef === "string"
                             ? controllerRef
-                            : (controllerRef && controllerRef.name
-                                ? controllerRef.name
-                                : (controllerRef && controllerRef.sheet
-                                    ? "BaseController (" + controllerRef.sheet + ")"
-                                    : "Controller"));
+                            : (controllerRef && controllerRef.name ? controllerRef.name : "Controller");
                         handlerLabel = ctrlName + "@" + entry.handlerSpec.method;
                     }
 
                     var sheetLabel = (entry.options && entry.options.sheet)
                         ? entry.options.sheet
-                        : "-";
-
-                    if (sheetLabel === "-" && controllerRef) {
-                        try {
-                            var resolvedCtrl = resolveControllerTarget(controllerRef);
-                            if (resolvedCtrl && resolvedCtrl.model && typeof resolvedCtrl.model.getTable === "function") {
-                                sheetLabel = resolvedCtrl.model.getTable();
-                            } else if (resolvedCtrl && resolvedCtrl.sheet) {
-                                sheetLabel = resolvedCtrl.sheet;
-                            }
-                        } catch (modelErr) {
-                            sheetLabel = "[Model Error: " + modelErr.message + "]";
-                        }
-                    }
+                        : inferControllerSheetLabel(controllerRef);
 
                     rows.push({
                         methods: entry.methods.join("|"),
@@ -807,7 +851,7 @@ var Middlewares = {
         var identifier = data.username || data.email || params.session || payload.session || "global";
         var cleanId = String(identifier).toLowerCase().trim().replace(/[^a-z0-9@._-]/g, "_");
         var prefix = typeof CACHE_CONFIG !== "undefined" ? CACHE_CONFIG.PREFIX : "GAS_DB_V1_";
-        var cacheKey = prefix + "THROTTLE_" + ctx.route + "_" + cleanId;
+        var cacheKey = prefix + "THROTTLE_" + ctx._routePath + "_" + cleanId;
 
         try {
             var cache = CacheService.getScriptCache();
@@ -978,7 +1022,7 @@ function dispatchHttpRequest(e, defaultMethod) {
 
         action = payload.action || params.action || "";
 
-        context = {
+        var baseContextData = {
             event: e,
             headers: (e.headers && typeof e.headers === "object") ? e.headers : {},
             route: routeName,
@@ -987,31 +1031,15 @@ function dispatchHttpRequest(e, defaultMethod) {
             action: action,
             params: params,
             payload: payload,
-            auth: null,
-            wantsJson: function () {
-                var appMode = (typeof CONFIG !== "undefined" && typeof CONFIG.getOptional === "function")
-                    ? String(CONFIG.getOptional("APP_MODE", "web") || "web").trim().toLowerCase()
-                    : "web";
-
-                if (appMode !== "web") {
-                    return true;
-                }
-
-                var formatHint = String(this.params.format || this.payload.format || "").trim().toLowerCase();
-                if (formatHint === "json") return true;
-                if (formatHint === "html") return false;
-
-                if (this.isApi === true) return true;
-                if (this.isWeb === true) return false;
-
-                var accept = String(this.headers.accept || this.headers.Accept || "").toLowerCase();
-                if (accept.indexOf("application/json") !== -1 && accept.indexOf("text/html") === -1) {
-                    return true;
-                }
-
-                return false;
-            }
+            auth: null
         };
+
+        context = typeof Request === "function"
+            ? new Request(baseContextData)
+            : Object.assign(baseContextData, {
+                _routePath: routeName,
+                wantsJson: function () { return true; }
+            });
 
         var resolution = Route.resolve(routeName, rawMethod, action);
         if (resolution.statusCode !== 200) {

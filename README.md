@@ -2,7 +2,7 @@
 
 **Laravel-inspired Hybrid Web & REST API MVC framework for Google Apps Script.**
 
-![Version](https://img.shields.io/badge/version-2.4.0-blue.svg)
+![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)
 ![Runtime](https://img.shields.io/badge/runtime-Google%20Apps%20Script%20V8-green.svg)
 ![Node.js](https://img.shields.io/badge/local%20emulator-Node.js%2018%2B-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)
@@ -18,17 +18,17 @@
 ### Key Features
 
 - **Zero-Quota Local Emulator:** Build, migrate, seed, and test Web pages or JSON endpoints locally against `local/storage/db.json` with automatic port fallback and SSE live-reload (`APP_DEBUG=true`) without hitting Google Apps Script execution quotas.
-- **Eloquent-Style ORM Models (`Model_Base.js`):** Define models in `src/app/Models/` with mandatory `fillable` / `guarded` mass-assignment protection (plus `forceUpdate()` bypass for internal system fields), optional `hidden` output redaction, `casts` (`boolean`, `integer`, `float`, `json`, `array`, `string`), fluent query chains (`where()`, `whereIn()`, `orderBy()`, `latest()`, `with()`, `withHidden()`, `first()`, `get()`, `paginate()`, `find()`), `belongsTo` / `hasMany` relationships with multi-level eager loading, soft deletes (`restore()`, `forceDelete()`, `withTrashed()`, `onlyTrashed()`), and `bulkCreate()`.
+- **Eloquent-Style ORM Models (`Model.js`):** Define models in `src/app/Models/` with mandatory `fillable` / `guarded` mass-assignment protection (plus `forceUpdate()` bypass for internal system fields), optional `hidden` output redaction, `casts` (`boolean`, `integer`, `float`, `json`, `array`, `string`), fluent query chains (`where()`, `whereIn()`, `orderBy()`, `latest()`, `with()`, `withHidden()`, `first()`, `get()`, `paginate()`, `datatable()`, `find()`), `belongsTo` / `hasMany` relationships with multi-level eager loading, soft deletes (`restore()`, `forceDelete()`, `withTrashed()`, `onlyTrashed()`), and `bulkCreate()`.
 - **Hybrid Web & API Architecture:** Separate `src/routes/web.js` and `src/routes/api.js` layers controlled by `APP_MODE` (`web` or `api`) and configurable `API_PREFIX` in `.env`. In `api` mode, web routes are completely disabled and `/` or `/index` resolve directly to your API index JSON response.
-- **Blade-Lite View Engine:** Write pure HTML templates in `src/resources/views/**/*.gas.js` with `@extends`, `@section`, `@yield`, `@include`, `@if`, `@forelse`, `@csrf`, `{{ }}`, and `{!! !!}`—with instant local hot-reload and automatic compilation during `gas push` / `gas deploy`.
+- **Blade-Lite View Engine (`View.js`):** Write pure HTML templates in `src/resources/views/**/*.gas.js` with `@extends`, `@section`, `@yield`, `@include`, `@if`, `@forelse`, `@csrf`, `{{ }}`, and `{!! !!}`—with instant local hot-reload and automatic compilation to `src/core/CompiledViews.js` during `gas push` / `gas deploy`.
 - **Isolated GAS Web App SPA Navigation:** Automatically intercepts internal links and form submissions (`POST`, `PUT`, `DELETE`) inside `HtmlService` iframes via `google.script.run` (`gasNavigate`) and `google.script.history`, preventing `X-Frame-Options` white screens and full iframe reloads while keeping user view layouts 100% pure HTML.
-- **Stateless CSRF Protection (`APP_KEY`):** Built-in HMAC-SHA256 + stream-cipher encrypted CSRF tokens (`Csrf.js`), `@csrf` Blade directive, automatic verification middleware on mutating web routes (HTTP `419` on mismatch), and `gas key:generate` CLI management.
-- **Unified `gas` CLI:** Scaffold models (`gas make:model`), full CRUD modules (`gas make:module`), controllers (`--web`, `--api`, `--hybrid`), views, migrations, and seeders; inspect routes (`gas route:list`); generate `APP_KEY`; sync framework core updates (`gas framework:update`); or manage `clasp` initialization, remote migrations, and Web App deployments from one tool.
-- **Zero-HTTP-Bootstrap Security:** Workspace provisioning (`setupWorkspace`) is completely isolated from public `doGet`/`doPost` routes, guarded by `LockService` and owner-only execution (`access: MYSELF`).
-- **V8 Load-Order Resilience & Request Caching:** Combines deterministic `filePushOrder`, deferred singleton class instantiation (`Controller.resolve()`), per-request `ScriptProperties` caching (`CONFIG`), and derived HMAC key caching to eliminate `ReferenceError` issues and redundant RPC overhead.
-- **Laravel-Style Controllers & Lifecycle Hooks:** Extend `Controller` in `src/app/Controllers/` with `model = ...`, `with = [...]`, multi-model queries, built-in `Validator.make(data, rules)`, and lifecycle hooks (`beforeStore`, `afterStore`, `beforeUpdate`, `afterUpdate`, `beforeDestroy`, `afterDestroy`).
+- **Stateless CSRF Protection (`Csrf.js` & `APP_KEY`):** Built-in HMAC-SHA256 + stream-cipher encrypted CSRF tokens, `@csrf` Blade directive, automatic verification middleware on mutating web routes (HTTP `419` on mismatch), and `gas key:generate` CLI management.
+- **Unified `gas` CLI:** Scaffold models (`gas make:model`), full CRUD modules (`gas make:module`), controllers (`--plain`/`--web`, `--api`, `-r`/`--resource`), views, migrations, and seeders; inspect routes (`gas route:list`); generate `APP_KEY`; sync framework core updates (`gas framework:update` with 3-way manifest merging); or manage `clasp` initialization, safe Script Properties sync, remote migrations, and Web App deployments from one tool.
+- **Zero-HTTP-Bootstrap Security (`Workspace.js`):** Workspace provisioning (`setupWorkspace` / `inspectWorkspace`) is completely isolated from public `doGet`/`doPost` routes in `src/main.js`, guarded by `LockService` and owner-only execution (`access: MYSELF`).
+- **V8 Load-Order Resilience & Request Caching:** Combines deterministic `filePushOrder`, deferred singleton class instantiation (`Controller.resolve()`), per-request `ScriptProperties` caching (`Config.js`), and derived HMAC key caching to eliminate `ReferenceError` issues and redundant RPC overhead.
+- **Laravel-Style Request, Validation & Controllers:** Extend `Controller` in `src/app/Controllers/` with `Request.js` (`request.only()`, `request.input()`, `request.header()`, `request.user()`, `request.wantsJson()`), `Validator.js` (`Validator.make(data, rules)`), and `Response.js` (`failResponse()`, `createHtmlOutputSafe()`).
 - **CORS-Safe Universal JSON Envelope:** Standardized `POST` payload (`action`, `session`, `id`, `data`) engineered to avoid HTTP `OPTIONS` preflight failures in GAS Web Apps.
-- **Built-In Auth, TTL & Rate Limiting:** Salted PBKDF2 password hashing (`Hash.make`, `Hash.check`, `Hash.needsRehash`), session expiration (`session_expires_at`), `throttle` middleware, and automatic password field redaction.
+- **Built-In Auth, TTL & Rate Limiting (`Authenticate.js` & `Hash.js`):** Salted PBKDF2 password hashing (`Hash.make`, `Hash.check`, `Hash.needsRehash`), session expiration (`session_expires_at`), `throttle` middleware, and automatic password field redaction.
 
 ---
 
@@ -38,51 +38,60 @@
 ├── gas                         # Unified CLI executable (Unix/macOS/Git Bash)
 ├── gas.cmd                     # Unified CLI wrapper (Windows CMD/PowerShell)
 ├── .env.example                # Environment template (APP_MODE, API_PREFIX, APP_DEBUG, APP_KEY, etc.)
-├── .clasp.json.example         # Template clasp config with deterministic filePushOrder
+├── .clasp.json.example         # Template clasp config with deterministic v3.0.0 filePushOrder
 ├── .claspignore                # Excludes raw .gas.js views & local files from GAS push
 ├── package.json                # Dependencies and npm scripts
 ├── local/
 │   ├── server.js               # Local HTTP dev server with auto port fallback & SSE hot-reload
 │   ├── runtime/
-│   │   ├── EnvLoader.js        # Loads local .env configuration into runtime
-│   │   ├── GasLoader.js        # Loads src/ modules & views into local Node.js runtime
-│   │   └── GasMocks.js         # Emulates SpreadsheetApp, PropertiesService, Utilities, etc.
+│   │   ├── EnvLoader.js        # Local .env parser & writer
+│   │   ├── GasLoader.js        # V8 context loader for src/ & views
+│   │   ├── GasMocks.js         # Emulates SpreadsheetApp, PropertiesService, Utilities, etc.
+│   │   └── SetupShell.js       # Configures shell PATH & CLI integration helpers
 │   └── storage/
 │       └── .gitkeep            # Local JSON database directory (db.json is gitignored)
 └── src/
     ├── appsscript.json         # GAS V8 manifest (executionApi: MYSELF, Web App settings)
-    ├── main.js                 # HTTP entry points (doGet, doPost) & gasNavigate SPA bridge
+    ├── main.js                 # Slim entry point (doGet, doPost & gasNavigate SPA bridge)
     ├── app/
-    │   ├── Controllers/        # Web, API Resource, and Hybrid controllers extending Controller
-    │   └── Models/             # Eloquent-style ORM models extending Model
+    │   ├── Controllers/
+    │   │   ├── AuthController.js
+    │   │   ├── HomeController.js
+    │   │   └── UserController.js
+    │   └── Models/
+    │       └── User.js
     ├── config/
-    │   └── config.js           # Cached ScriptProperties loader & CONFIG getters
+    │   └── Config.js           # Cached ScriptProperties loader & CONFIG getters
     ├── core/
-    │   ├── Controller_Base.js  # Base Controller class (alias BaseController) with CRUD, hooks & relations
-    │   ├── Core_Router.js      # Dual Web/API route registration, CSRF/auth middleware & dispatching
-    │   ├── Core_View.js        # Blade-lite template compiler & layout rendering engine
-    │   ├── Csrf.js             # Stateless HMAC-SHA256 encrypted CSRF token generator & verifier
-    │   ├── Database_Migration.js
-    │   ├── Database_Seeder.js
-    │   ├── Model_Base.js       # Eloquent-style Model ORM base class & fluent query builder
-    │   ├── crud.js             # Spreadsheet query, index cache, lock & mutation engine
-    │   ├── database.js         # Spreadsheet connection & sheet resolver
-    │   ├── env_sync.js         # EnvSync & owner-only WorkspaceSetup / setupWorkspace provisioner
-    │   ├── foglobal.js         # Validator, sanitizer, HTML/JSON response & GAS SPA client runtime
-    │   └── hash.js             # PBKDF2 password hashing & verification
+    │   ├── CompiledViews.js    # Auto-generated build from view:compile (gitignored)
+    │   ├── Controller.js       # Base Controller class (alias BaseController)
+    │   ├── Csrf.js             # Stateless HMAC-SHA256 CSRF token generator & verifier
+    │   ├── Database.js         # Spreadsheet connection & sheet resolver
+    │   ├── Hash.js             # PBKDF2 password hashing & verification
+    │   ├── Helpers.js          # Global utilities, sanitizer & GAS iframe SPA client runtime
+    │   ├── Migration.js        # Schema builder & migration runner
+    │   ├── Model.js            # Eloquent-style ORM & fluent query builder
+    │   ├── Request.js          # HTTP Request wrapper (input, only, header, auth, wantsJson)
+    │   ├── Response.js         # JSON/HTML response helpers & createHtmlOutputSafe()
+    │   ├── Router.js           # Web/API router, middleware pipeline & dispatcher
+    │   ├── Seeder.js           # Database seeder registry & runner
+    │   ├── SheetStore.js       # Spreadsheet query, index cache, lock & row mutation engine
+    │   ├── Validator.js        # Laravel-style input validation engine (Validator.make)
+    │   ├── View.js             # Blade-lite template compiler & layout engine
+    │   └── Workspace.js        # EnvSync, inspectWorkspace & owner-only setupWorkspace provisioner
     ├── database/
     │   ├── migrations/         # Timestamped schema migration files
     │   └── seeders/            # Database seeder definitions
     ├── middleware/
-    │   └── middleware.js       # Session authentication & expiration guards
+    │   └── Authenticate.js     # Session & token expiration guard
     ├── resources/
     │   └── views/              # Pure HTML + Blade-lite templates (*.gas.js)
     │       ├── layouts/
     │       │   └── app.gas.js
     │       └── home.gas.js
     ├── routes/
-    │   ├── web.js              # Web routes (registerWebRoutes)
-    │   └── api.js              # API routes (registerRoutes, auto-prefixed by API_PREFIX)
+    │   ├── api.js              # API routes (registerRoutes, auto-prefixed by API_PREFIX)
+    │   └── web.js              # Web routes (registerWebRoutes)
     └── tools/
         ├── CodeGenerator.js    # GAS Web Editor module/migration/controller generator
         └── DevTools.js         # Owner-only diagnostic & auth verification helpers
@@ -94,7 +103,7 @@
 
 - **Node.js** `v18.0.0` or higher
 - **Google Account** with Google Drive & Google Apps Script access
-- **Google Apps Script API** enabled at [script.google.com/home/usersettings](https://script.google.com/home/usersettings)
+- **Google Apps Script API** enabled at https://script.google.com/home/usersettings
 
 ---
 
@@ -211,7 +220,7 @@ Views live in `src/resources/views/` using the `.gas.js` extension and contain *
 - **Layouts & Partials:** `@extends('layouts.app')`, `@section('name') ... @endsection`, `@yield('name', 'default')`, `@include('partials.alert')`, `@includeIf(...)`, `@push('scripts') ... @endpush`, `@stack('scripts')`
 - **Control Flow & Loops:** `@if`, `@elseif`, `@else`, `@endif`, `@unless`, `@isset`, `@empty`, `@foreach (items as key => item)`, `@forelse (items as item) ... @empty ... @endforelse`, `@for` (with `loop.index`, `loop.iteration`, `loop.first`, `loop.last`, `loop.count`)
 - **Security, Output & Routing:** `@csrf`, `csrfToken()`, `csrfField()`, `{{ escaped }}`, `{!! rawHtml !!}`, `{{-- comment --}}`, `url('/path')`, `apiUrl('/users')`, `route('users.edit', { id: 1 })`, `json(data)`
-- **GAS Compilation & Runtime Isolation:** During local development (`APP_DEBUG=true`), `.gas.js` views hot-reload automatically via SSE. When running `gas push` or `gas deploy`, `compileViews()` bundles all templates into `src/core/Core_Views_Compiled.js`. On Google Apps Script Web Apps, `createHtmlOutputSafe()` injects an isolated client runtime (`google.script.run` + `google.script.history`) automatically so your views stay completely framework-agnostic and safe from `gas framework:update`.
+- **GAS Compilation & Runtime Isolation:** During local development (`APP_DEBUG=true`), `.gas.js` views hot-reload automatically via SSE. When running `gas push` or `gas deploy`, `compileViews()` bundles all templates into `src/core/CompiledViews.js`. On Google Apps Script Web Apps, `createHtmlOutputSafe()` in `src/core/Response.js` injects an isolated client runtime from `src/core/Helpers.js` (`google.script.run` + `google.script.history`) automatically so your views stay completely framework-agnostic and safe from `gas framework:update`.
 
 ---
 
@@ -223,7 +232,7 @@ Create a complete CRUD resource from scratch in four steps:
    ```bash
    gas make:module Project
    ```
-   *(Or scaffold a standalone model with optional flags: `gas make:model Project -m -c -s` or `gas make:model Project -a`.)*
+   *(Defaults to `--api` 5-method controller. Pass `--resource` / `-r` for a 7-method Web+API resource controller, or scaffold individual pieces via `gas make:model Project -m -c -s`.)*
 
 2. **Configure fields in the generated Model (`src/app/Models/Project.js`) and Migration (`src/database/migrations/..._CreateProjectsTable.js`):**
    ```javascript
@@ -273,9 +282,9 @@ gas init "My GAS Backend"
 
 ### 2. Deploy as Web App
 ```bash
-gas deploy "v2.4.0"
+gas deploy "v3.0.0"
 ```
-On the first push/deploy, if `APP_KEY` is not yet set, the CLI will prompt you to generate and save one automatically. `gas deploy` compiles views, pushes `src/` to Google Apps Script, publishes a versioned Web App deployment, syncs `.env` keys (`APP_MODE`, `API_PREFIX`, `APP_DEBUG`, `APP_KEY`) to Script Properties, and outputs your production URL (`https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec`).
+On the first push/deploy, if `APP_KEY` is not yet set, the CLI automatically generates and saves one (or prompts when `GAS_DEPLOY_AUTO_KEY=false`). `gas deploy` compiles views, pushes `src/` to Google Apps Script, publishes a versioned Web App deployment, safely syncs `.env` keys (`APP_MODE`, `API_PREFIX`, `APP_DEBUG`, `APP_KEY`) to Script Properties without clobbering existing production keys, and outputs your production URL (`https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec`).
 
 ### 3. One-Time Workspace Provisioning (Owner-Only)
 Because public HTTP routes are locked against unauthenticated bootstrapping:
@@ -289,7 +298,7 @@ Because public HTTP routes are locked against unauthenticated bootstrapping:
    - `setupWorkspace()` creates a dedicated Google Spreadsheet, stores `SHEET_ID` in **Script Properties**, executes all pending migrations, and runs initial seeders.
 4. *(Optional)* Copy the `Web App URL` from your terminal and save it as `BASE_URL` in **Project Settings → Script Properties**.
 
-*(Alternatively, configure desktop OAuth credentials once via `gas creds` to run remote migrations and seeders directly from your terminal using `gas deploy --migrate --seed` or `gas migrate:remote --seed`.)*
+*(Alternatively, configure desktop OAuth credentials once via `gas creds` to run remote migrations, seeders, and safe Script Properties sync directly from your terminal using `gas deploy --migrate --seed` or `gas deploy --fresh --migrate --seed`.)*
 
 **Execution Log Output (`setupWorkspace`):**
 
@@ -302,7 +311,7 @@ Because public HTTP routes are locked against unauthenticated bootstrapping:
 ### 4. Subsequent Updates
 For future releases, run:
 ```bash
-gas deploy "v2.4.1"
+gas deploy "v3.0.1"
 ```
 `gas deploy` automatically reuses your saved `deploymentId` so your production `/exec` URL remains constant.
 
@@ -320,24 +329,24 @@ gas deploy "v2.4.1"
 | `gas login` | Authenticate your Google account via `clasp`. |
 | `gas creds [-f\|--force]` | Setup `creds.json` & authenticate `clasp` for remote CLI execution (`clasp run`). |
 | `gas key:generate [-f\|--force]` | Generate `APP_KEY` in `.env` & `.clasp.json`, and sync it to GAS Script Properties. |
-| `gas push [-f] [--seed] [--setup]` | Compile views, prompt `APP_KEY` (first run), push `src/` to GAS, and sync via `setupWorkspace`. |
+| `gas push [-f\|--force] [--seed] [--setup] [--env-sync <mode>] [--sheet <mode>] [--fresh] [-y\|--yes]` | Compile views, push `src/` to GAS, and safely sync Script Properties via `setupWorkspace`. |
 | `gas pull` | Pull remote files from Google Apps Script into `src/`. |
 | `gas status` | Check file sync status between local `src/` and remote GAS. |
 | `gas open` | Open the active project in the Google Apps Script Web Editor. |
-| `gas deploy [Description] [--migrate] [--seed] [--setup]` | Compile views, prompt `APP_KEY` (first run), push latest code, and create or update the production Web App deployment. |
-| `gas framework:update [--dry-run] [--remote <name>] [--branch <branch>] [--repo <url>]` | Pull updates for core framework (`Model_Base.js`, `Controller_Base.js`, etc.), local runtime, and CLI files (`gas`, `gas.cmd`, `src/core`, `src/middleware`, `src/tools`, `src/config/config.js`, `local/runtime`, `local/server.js`) without overwriting project files (`src/app/`, `src/routes/`, `src/resources/`, `src/database/`). |
+| `gas deploy [Description] [--migrate] [--seed] [--setup] [--env-sync <ask\|keep\|merge\|overwrite>] [--sheet <ask\|keep\|env\|generate>] [--fresh] [-y\|--yes]` | Compile views, push latest code, create or update the production Web App deployment, and sync Script Properties. |
+| `gas framework:update [--dry-run] [--commit] [--remote <name>] [--branch <branch\|tag>] [--repo <url>]` | Pull updates for core framework (`Model.js`, `Controller.js`, `Request.js`, `SheetStore.js`, etc.), local runtime, and CLI files (`gas`, `gas.cmd`, `src/core`, `src/middleware/Authenticate.js`, `src/tools`, `src/config/Config.js`, `local/runtime`, `local/server.js`), and 3-way smart-merge `src/appsscript.json`, `.clasp.json`, `package.json`, `.gitignore`, and `.claspignore` without overwriting project files (`src/app/`, `src/routes/`, `src/resources/`, `src/database/`). |
 
 ### Code Generators & Views
 
 | Command | Description |
 | :--- | :--- |
-| `gas make:module <Entity> [--api\|--hybrid\|--web]` | Generate a Model, Migration, Seeder, and Controller in one command (defaults to `--api`). |
-| `gas make:model <Name> [-m] [-c] [-s] [-r] [-a] [--api\|--hybrid\|--web]` | Create an Eloquent-style Model in `src/app/Models/` with optional Migration (`-m`), Controller (`-c` / `-r`), Seeder (`-s`), or all (`-a`). |
+| `gas make:module <Entity> [--api\|-r\|--resource]` | Generate a Model, Migration, Seeder, and Controller in one command (defaults to `--api`). |
+| `gas make:model <Name> [-m] [-c] [-s] [-r] [-a] [--api] [--plain\|--web]` | Create an Eloquent-style Model in `src/app/Models/` with optional Migration (`-m`), Controller (`-c` / `-r`), Seeder (`-s`), or all (`-a`). |
 | `gas make:migration <Name>` | Create a timestamped migration in `src/database/migrations/`. |
-| `gas make:controller <Name> [--web\|--api\|--hybrid]` | Create a Web (`--web`, default), API Resource (`--api`), or Hybrid (`--hybrid`) controller. |
+| `gas make:controller <Name> [--plain\|--web\|--api\|-r\|--resource]` | Create an empty (`--plain`/`--web`, default), API (`--api`, 5 methods), or Resource (`-r`/`--resource`, 7 methods) controller. |
 | `gas make:seeder <Name>` | Create a seeder file in `src/database/seeders/`. |
 | `gas make:view <Name>` | Create a Blade-lite `.gas.js` template in `src/resources/views/`. |
-| `gas view:compile` | Compile all `src/resources/views/**/*.gas.js` templates into `src/core/Core_Views_Compiled.js`. |
+| `gas view:compile` | Compile all `src/resources/views/**/*.gas.js` templates into `src/core/CompiledViews.js`. |
 
 ### Local & Remote Database, Routing & Diagnostics
 
@@ -359,7 +368,7 @@ gas deploy "v2.4.1"
 
 ### Updating Framework in an Existing Project
 
-To pull framework, local runtime, and CLI improvements from `asal-gas` into an existing project without overwriting custom models (`src/app/Models`), controllers (`src/app/Controllers`), routes (`src/routes/web.js`, `src/routes/api.js`), views (`src/resources/views`), migrations, seeders, or local credentials:
+To pull framework, local runtime, and CLI improvements from `asal-gas` into an existing project without overwriting custom models (`src/app/Models`), controllers (`src/app/Controllers`), routes (`src/routes/web.js`, `src/routes/api.js`), views (`src/resources/views`), migrations, seeders, custom `src/appsscript.json` scopes/settings, or local credentials:
 
 ```bash
 gas framework:update --dry-run
@@ -448,45 +457,51 @@ GET https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec?route=api/users&sess
 ## Architecture & Security Design
 
 ### 1. Zero-HTTP-Bootstrap
-`src/main.js` only dispatches registered application routes (`doGet`, `doPost`, and `gasNavigate`). Workspace provisioning (`WorkspaceSetup.init()` in `src/core/env_sync.js`) cannot be triggered by anonymous HTTP requests, eliminating first-claim hijacking or unauthorized spreadsheet creation on public deployments.
+`src/main.js` acts strictly as an entry point dispatching registered application routes (`doGet`, `doPost`, and `gasNavigate`). Workspace provisioning (`setupWorkspace` / `inspectWorkspace` in `src/core/Workspace.js`) cannot be triggered by anonymous HTTP requests, eliminating first-claim hijacking or unauthorized spreadsheet creation on public deployments.
 
 ### 2. Stateless CSRF Protection (`APP_KEY`)
-All mutating web routes (`POST`, `PUT`, `PATCH`, `DELETE`) registered in `src/routes/web.js` automatically prepend the `csrf` middleware (pass `{ withoutCsrf: true }` in route options to opt out). `Csrf.js` signs and encrypts expiring tokens using keys derived from `APP_KEY` via HMAC-SHA256, validating `_token`, `csrf_token`, or `X-CSRF-TOKEN` / `X-XSRF-TOKEN` headers without storing server-side session state.
+All mutating web routes (`POST`, `PUT`, `PATCH`, `DELETE`) registered in `src/routes/web.js` automatically prepend the `csrf` middleware (pass `{ withoutCsrf: true }` in route options to opt out). `src/core/Csrf.js` signs and encrypts expiring tokens using keys derived from `APP_KEY` via HMAC-SHA256, validating `_token`, `csrf_token`, or `X-CSRF-TOKEN` / `X-XSRF-TOKEN` headers without storing server-side session state.
 
 ### 3. Isolated GAS Iframe SPA Runtime
-Google Apps Script Web Apps render inside nested sandboxed iframes that block standard cross-frame reloads (`X-Frame-Options`). `createHtmlOutputSafe()` in `src/core/foglobal.js` configures `XFrameOptionsMode.ALLOWALL` and injects a self-contained client runtime that intercepts internal navigation and form submissions via `google.script.run.gasNavigate(...)` and `google.script.history`, keeping user Blade views in `src/resources/views/` completely clean.
+Google Apps Script Web Apps render inside nested sandboxed iframes that block standard cross-frame reloads (`X-Frame-Options`). `createHtmlOutputSafe()` in `src/core/Response.js` configures `XFrameOptionsMode.ALLOWALL` and injects the self-contained client runtime from `src/core/Helpers.js` that intercepts internal navigation and form submissions via `google.script.run.gasNavigate(...)` and `google.script.history`, keeping user Blade views in `src/resources/views/` completely clean.
 
-### 4. GAS V8 Load-Order Safety & Multi-Model Controllers
-In Google Apps Script's V8 runtime, top-level code executes sequentially by file order. `filePushOrder` loads `src/core/Model_Base.js` before `src/core/Controller_Base.js`, and controllers extend `Controller` directly with deferred singleton instantiation (`Controller.resolve()`) when the first matching route is dispatched—guaranteeing all models and `src/core/` dependencies are loaded first while allowing any controller to query multiple models (`User`, `Company`, etc.) with guaranteed `casts` and `hidden` sanitization:
+### 4. GAS V8 Load-Order Safety & Request-Driven Controllers
+In Google Apps Script's V8 runtime, top-level code executes sequentially by file order. `filePushOrder` in `.clasp.json` loads `Config.js`, `Database.js`, `Helpers.js`, `Validator.js`, `Response.js`, `View.js`, `CompiledViews.js`, `Hash.js`, `Csrf.js`, `SheetStore.js`, `Router.js`, `Migration.js`, `Seeder.js`, `Model.js`, `Controller.js`, `Authenticate.js`, and `Workspace.js` in deterministic order. Controllers extend `Controller` directly with deferred singleton instantiation (`Controller.resolve()`) and receive a `Request` wrapper (`src/core/Request.js`) on every action:
 
 ```javascript
 class ProjectController extends Controller {
-    model = Project;
-    with = ["owner"];
+    index(request) {
+        if (request.wantsJson()) {
+            return Project.datatable(request);
+        }
 
-    summary(ctx) {
-        const activeProjects = Project.with("owner")
-            .where("status", "active")
-            .latest()
-            .get();
+        return view("projects.index", {
+            items: Project.with("owner").latest().get()
+        });
+    }
 
-        const users = User.orderBy("name", "asc").get();
+    store(request) {
+        var data = request.only(["name", "status"]);
+        var validation = Validator.make(data, {
+            name: "required|string|max:255",
+            status: "required|string|max:50"
+        });
+        if (validation.fails()) {
+            return failResponse("Validation failed.", 422, { errors: validation.errors() });
+        }
 
-        return {
-            status: true,
-            data: { projects: activeProjects, users }
-        };
+        return Project.create(data);
     }
 }
 ```
 
-Routes can be registered using string notation (`"ProjectController@summary"`), Laravel tuple notation (`[ProjectController, "summary"]`), or `Route.resource("projects", ProjectController)`.
+Routes can be registered using string notation (`"ProjectController@index"`), Laravel tuple notation (`[ProjectController, "index"]`), or `Route.resource("projects", ProjectController)`.
 
 ### 5. Mass-Assignment Guard (`fillable` / `guarded`) & Output Redaction (`hidden`)
-Every `Model` subclass must explicitly define at least `fillable` (allowed columns) or `guarded` (blocked columns, including `guarded = ["*"]` or `guarded = []`); omitting both throws `ModelConfigurationError`. Columns listed in `guarded` cannot be written or altered via `create()` or `update()`, while trusted system operations (such as updating `session` and `session_expires_at` during login/logout) use `Model.forceUpdate()` to bypass mass-assignment guards. `hidden` operates independently as an optional output filter (`[]` by default) and can be selectively revealed via `.withHidden(...)`.
+Every `Model` subclass (`src/core/Model.js`) must explicitly define at least `fillable` (allowed columns) or `guarded` (blocked columns, including `guarded = ["*"]` or `guarded = []`); omitting both throws `ModelConfigurationError`. Columns listed in `guarded` cannot be written or altered via `create()` or `update()`, while trusted system operations (such as updating `session` and `session_expires_at` during login/logout) use `Model.forceUpdate()` to bypass mass-assignment guards. `hidden` operates independently as an optional output filter (`[]` by default) and can be selectively revealed via `.withHidden(...)`.
 
 ### 6. Sensitive & Generated File Isolation
-`.env`, `.clasp.json`, `.clasprc.json`, `creds.json`, `local/storage/*.json`, and `src/core/Core_Views_Compiled.js` are ignored via `.gitignore` so personal credentials, local test records, and compiled view artifacts stay out of version control.
+`.env`, `.clasp.json`, `.clasprc.json`, `creds.json`, `local/storage/*.json`, and `src/core/CompiledViews.js` are ignored via `.gitignore` so personal credentials, local test records, and compiled view artifacts stay out of version control.
 
 ---
 

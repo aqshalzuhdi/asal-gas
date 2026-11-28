@@ -16,6 +16,7 @@ class User extends Model {
     hidden = [
         "password",
         "session",
+        "session_expires_at",
         "deleted_at"
     ];
 

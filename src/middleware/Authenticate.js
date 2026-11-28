@@ -2,16 +2,40 @@ function extractSessionToken(requestObject, isPost) {
     if (!requestObject) return null;
 
     if (isPost && requestObject.postData && requestObject.postData.contents) {
-        try {
-            var payload = JSON.parse(requestObject.postData.contents);
-            if (payload && payload.session) {
-                return String(payload.session).trim();
+        var rawBody = String(requestObject.postData.contents).trim();
+        if (rawBody.charAt(0) === "{") {
+            try {
+                var payload = JSON.parse(rawBody);
+                if (payload && payload.session) {
+                    return String(payload.session).trim();
+                }
+            } catch (_) { }
+        } else if (rawBody !== "") {
+            var pairs = rawBody.split("&");
+            for (var p = 0; p < pairs.length; p++) {
+                var eqIdx = pairs[p].indexOf("=");
+                if (eqIdx === -1) continue;
+                var k = decodeURIComponent(pairs[p].slice(0, eqIdx).replace(/\+/g, " "));
+                if (k === "session") {
+                    var v = decodeURIComponent(pairs[p].slice(eqIdx + 1).replace(/\+/g, " ")).trim();
+                    if (v) return v;
+                }
             }
-        } catch (e) {}
+        }
     }
 
     if (requestObject.parameter && requestObject.parameter.session) {
         return String(requestObject.parameter.session).trim();
+    }
+
+    if (requestObject.headers && typeof requestObject.headers === "object") {
+        var headerKeys = Object.keys(requestObject.headers);
+        for (var h = 0; h < headerKeys.length; h++) {
+            if (String(headerKeys[h]).toLowerCase() === "x-session-key") {
+                var headerVal = String(requestObject.headers[headerKeys[h]] || "").trim();
+                if (headerVal) return headerVal;
+            }
+        }
     }
 
     return null;
