@@ -3,11 +3,13 @@
  *
  * Usage:
  * 1. Set `GENERATOR_TARGET.module` (e.g., "Project"), then run one of:
- *    - `generateModule`     -> Scaffolds Model + Migration + Seeder + Controller
- *    - `generateModel`      -> Creates `Project` Model
- *    - `generateMigration`  -> Creates `CreateProjectsTable`
- *    - `generateSeeder`     -> Creates `ProjectSeeder`
- *    - `generateController` -> Creates `ProjectController`
+ *    - `generateModule`             -> Scaffolds Model + Migration + Seeder + API Controller
+ *    - `generateModel`              -> Creates `Project` Model
+ *    - `generateMigration`          -> Creates `CreateProjectsTable`
+ *    - `generateSeeder`             -> Creates `ProjectSeeder`
+ *    - `generateController`         -> Creates empty `ProjectController` (or pass `{ api: true }` / `{ resource: true }`)
+ *    - `generateApiController`      -> Creates 5-method API `ProjectController`
+ *    - `generateResourceController` -> Creates 7-method Resource `ProjectController`
  * 2. For custom names (e.g., alter table migrations), populate the specific
  *    override field (`model` / `migration` / `seeder` / `controller`).
  */
@@ -22,7 +24,8 @@ var GENERATOR_TARGET = {
 var CodeGenerator = {
     API_BASE: "https://script.googleapis.com/v1/projects/",
 
-    module: function (rawModuleName) {
+    module: function (rawModuleName, options) {
+        var opts = options || {};
         var entityPascal = this._resolveBaseEntity(rawModuleName || GENERATOR_TARGET.module);
         if (!entityPascal) {
             throw new Error("Module name cannot be empty. Set GENERATOR_TARGET.module first.");
@@ -30,18 +33,20 @@ var CodeGenerator = {
 
         var tableName = this._pluralizeSnake(this._toSnakeCase(entityPascal));
         var tablePascal = this._toPascalCase(tableName);
+        var ctrlMode = opts.resource ? { resource: true, sheet: tableName } : { api: true, sheet: tableName };
 
         var filesToCreate = [
             this._prepareModelFile(entityPascal),
             this._prepareMigrationFile("Create" + tablePascal + "Table", 0),
             this._prepareSeederFile(entityPascal + "Seeder"),
-            this._prepareControllerFile(entityPascal + "Controller", { sheet: tableName })
+            this._prepareControllerFile(entityPascal + "Controller", ctrlMode)
         ];
 
         var result = this._createProjectFiles(filesToCreate);
+        var routeMethod = opts.resource ? "Route.resource" : "Route.apiResource";
 
         Logger.log("=== MODULE SCAFFOLDING COMPLETED (" + entityPascal + ") ===");
-        Logger.log('Register in routes/api -> Route.resource("' + tableName + '", "' + entityPascal + 'Controller");');
+        Logger.log('Register in routes -> ' + routeMethod + '("' + tableName + '", "' + entityPascal + 'Controller");');
         return result;
     },
 
@@ -92,7 +97,7 @@ var CodeGenerator = {
         var result = this._createProjectFiles([fileSpec]);
 
         if (fileSpec.meta && fileSpec.meta.routeSuggestion) {
-            Logger.log("Register in routes/api -> " + fileSpec.meta.routeSuggestion);
+            Logger.log("Register in routes -> " + fileSpec.meta.routeSuggestion);
         }
         return result;
     },
@@ -101,7 +106,7 @@ var CodeGenerator = {
         var clean = String(rawInput || "").trim();
         if (!clean) return "";
         var pascal = this._toPascalCase(clean);
-        return pascal.replace(/(Controller|Seeder)$/, "") || pascal;
+        return pascal.replace(/(Controller|Seeder|Model)$/, "") || pascal;
     },
 
     _prepareModelFile: function (rawName) {
@@ -146,15 +151,28 @@ var CodeGenerator = {
         var opts = options || {};
         var baseEntity = this._resolveBaseEntity(rawName);
         var pascalName = baseEntity + "Controller";
-        var tableName = opts.sheet || this._pluralizeSnake(this._toSnakeCase(baseEntity));
+        var snakeBase = this._toSnakeCase(baseEntity);
+        var tableName = opts.sheet || this._pluralizeSnake(snakeBase);
         var gasFileName = pascalName;
-        var sourceCode = opts.plain
-            ? this._buildPlainControllerTemplate(pascalName)
-            : this._buildResourceControllerTemplate(pascalName, baseEntity);
 
-        var routeSuggestion = opts.plain
-            ? 'Route.get("' + this._toSnakeCase(baseEntity) + '", "' + pascalName + '@index");'
-            : 'Route.resource("' + tableName + '", "' + pascalName + '");';
+        var mode = "plain";
+        if (opts.resource) {
+            mode = "resource";
+        } else if (opts.api) {
+            mode = "api";
+        }
+
+        var sourceCode = mode === "resource"
+            ? this._buildResourceControllerTemplate(pascalName, baseEntity, tableName)
+            : mode === "api"
+                ? this._buildApiControllerTemplate(pascalName, baseEntity)
+                : this._buildPlainControllerTemplate(pascalName);
+
+        var routeSuggestion = mode === "resource"
+            ? 'Route.resource("' + tableName + '", "' + pascalName + '");'
+            : mode === "api"
+                ? 'Route.apiResource("' + tableName + '", "' + pascalName + '");'
+                : 'Route.get("' + snakeBase + '", "' + pascalName + '@index");';
 
         return {
             name: gasFileName,
@@ -307,16 +325,151 @@ var CodeGenerator = {
         ].join("\n");
     },
 
-    _buildResourceControllerTemplate: function (controllerName, entityPascal) {
+    _buildApiControllerTemplate: function (controllerName, entityPascal) {
         return [
             'class ' + controllerName + ' extends Controller {',
-            '    model = ' + entityPascal + ';',
-            '    with = [];',
+            '    index(request) {',
+            '        return ' + entityPascal + '.datatable(request);',
+            '    }',
             '',
-            '    // Optional lifecycle hooks: beforeStore, afterStore, beforeUpdate, afterUpdate, beforeDestroy, afterDestroy',
-            '    // beforeStore(ctx) {',
-            '    //     return { status: true };',
-            '    // }',
+            '    store(request) {',
+            '        var data = request.only(["name"]);',
+            '        var validation = Validator.make(data, {',
+            '            name: "required|string|max:255"',
+            '        });',
+            '        if (validation.fails()) {',
+            '            return failResponse("Validation failed.", 422, { errors: validation.errors() });',
+            '        }',
+            '',
+            '        return ' + entityPascal + '.create(data);',
+            '    }',
+            '',
+            '    show(request, id) {',
+            '        var targetId = id || request.input("id");',
+            '        var item = ' + entityPascal + '.find(targetId);',
+            '        if (!item) {',
+            '            return failResponse("' + entityPascal + ' not found.", 404);',
+            '        }',
+            '',
+            '        return { status: true, code: 200, data: item };',
+            '    }',
+            '',
+            '    update(request, id) {',
+            '        var targetId = id || request.input("id");',
+            '        var item = ' + entityPascal + '.find(targetId);',
+            '        if (!item) {',
+            '            return failResponse("' + entityPascal + ' not found.", 404);',
+            '        }',
+            '',
+            '        var data = request.only(["name"]);',
+            '        var validation = Validator.make(data, {',
+            '            name: "required|string|max:255"',
+            '        });',
+            '        if (validation.fails()) {',
+            '            return failResponse("Validation failed.", 422, { errors: validation.errors() });',
+            '        }',
+            '',
+            '        return ' + entityPascal + '.update(item.id, data);',
+            '    }',
+            '',
+            '    destroy(request, id) {',
+            '        var targetId = id || request.input("id");',
+            '        var item = ' + entityPascal + '.find(targetId);',
+            '        if (!item) {',
+            '            return failResponse("' + entityPascal + ' not found.", 404);',
+            '        }',
+            '',
+            '        return ' + entityPascal + '.destroy(item.id);',
+            '    }',
+            '}',
+            ''
+        ].join("\n");
+    },
+
+    _buildResourceControllerTemplate: function (controllerName, entityPascal, viewFolder) {
+        return [
+            'class ' + controllerName + ' extends Controller {',
+            '    index(request) {',
+            '        if (request.wantsJson()) {',
+            '            return ' + entityPascal + '.datatable(request);',
+            '        }',
+            '',
+            '        return view("' + viewFolder + '.index", {',
+            '            items: ' + entityPascal + '.all()',
+            '        });',
+            '    }',
+            '',
+            '    create(request) {',
+            '        return view("' + viewFolder + '.create");',
+            '    }',
+            '',
+            '    store(request) {',
+            '        var data = request.only(["name"]);',
+            '        var validation = Validator.make(data, {',
+            '            name: "required|string|max:255"',
+            '        });',
+            '        if (validation.fails()) {',
+            '            return failResponse("Validation failed.", 422, { errors: validation.errors() });',
+            '        }',
+            '',
+            '        return ' + entityPascal + '.create(data);',
+            '    }',
+            '',
+            '    show(request, id) {',
+            '        var targetId = id || request.input("id");',
+            '        var item = ' + entityPascal + '.find(targetId);',
+            '        if (!item) {',
+            '            return failResponse("' + entityPascal + ' not found.", 404);',
+            '        }',
+            '',
+            '        if (request.wantsJson()) {',
+            '            return { status: true, code: 200, data: item };',
+            '        }',
+            '',
+            '        return view("' + viewFolder + '.show", {',
+            '            item: item',
+            '        });',
+            '    }',
+            '',
+            '    edit(request, id) {',
+            '        var targetId = id || request.input("id");',
+            '        var item = ' + entityPascal + '.find(targetId);',
+            '        if (!item) {',
+            '            return failResponse("' + entityPascal + ' not found.", 404);',
+            '        }',
+            '',
+            '        return view("' + viewFolder + '.edit", {',
+            '            item: item',
+            '        });',
+            '    }',
+            '',
+            '    update(request, id) {',
+            '        var targetId = id || request.input("id");',
+            '        var item = ' + entityPascal + '.find(targetId);',
+            '        if (!item) {',
+            '            return failResponse("' + entityPascal + ' not found.", 404);',
+            '        }',
+            '',
+            '        var data = request.only(["name"]);',
+            '        var validation = Validator.make(data, {',
+            '            name: "required|string|max:255"',
+            '        });',
+            '        if (validation.fails()) {',
+            '            return failResponse("Validation failed.", 422, { errors: validation.errors() });',
+            '        }',
+            '',
+            '        return ' + entityPascal + '.update(item.id, data);',
+            '    }',
+            '',
+            '    destroy(request, id) {',
+            '        var targetId = id || request.input("id");',
+            '        var item = ' + entityPascal + '.find(targetId);',
+            '        if (!item) {',
+            '            return failResponse("' + entityPascal + ' not found.", 404);',
+            '        }',
+            '',
+            '        return ' + entityPascal + '.destroy(item.id);',
+            '    }',
             '}',
             ''
         ].join("\n");
@@ -325,9 +478,7 @@ var CodeGenerator = {
     _buildPlainControllerTemplate: function (controllerName) {
         return [
             'class ' + controllerName + ' extends Controller {',
-            '    index(ctx) {',
-            '        return { status: true, data: [] };',
-            '    }',
+            '    //',
             '}',
             ''
         ].join("\n");
@@ -444,8 +595,8 @@ var CodeGenerator = {
     }
 };
 
-function generateModule(name) {
-    return CodeGenerator.module(name);
+function generateModule(name, options) {
+    return CodeGenerator.module(name, options);
 }
 
 function generateModel(name) {
@@ -462,6 +613,14 @@ function generateSeeder(name) {
 
 function generateController(name, options) {
     return CodeGenerator.controller(name, options);
+}
+
+function generateApiController(name) {
+    return CodeGenerator.controller(name, { api: true });
+}
+
+function generateResourceController(name) {
+    return CodeGenerator.controller(name, { resource: true });
 }
 
 function generatePlainController(name) {

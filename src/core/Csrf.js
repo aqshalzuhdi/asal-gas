@@ -122,16 +122,15 @@ var Csrf = (function () {
             };
 
             var secret = getSecretKey();
-            var encKeyBytes = hmacSha256Bytes("csrf-enc:" + secret, secret);
-            var macKeyBytes = hmacSha256Bytes("csrf-mac:" + secret, secret);
+            var derived = getDerivedKeys(secret);
             var ivBytes = hmacSha256Bytes("csrf-iv:" + generateNonce() + ":" + Date.now(), secret).slice(0, 16);
 
             var plainBytes = stringToUtf8Bytes(JSON.stringify(payloadObj));
-            var cipherBytes = xorCipherBytes(plainBytes, encKeyBytes, ivBytes);
+            var cipherBytes = xorCipherBytes(plainBytes, derived.encKeyBytes, ivBytes);
 
             var ivB64 = bytesToBase64Url(ivBytes);
             var cipherB64 = bytesToBase64Url(cipherBytes);
-            var sigBytes = hmacSha256Bytes(ivB64 + "." + cipherB64, macKeyBytes);
+            var sigBytes = hmacSha256Bytes(ivB64 + "." + cipherB64, derived.macKeyBytes);
             var sigB64 = bytesToBase64Url(sigBytes);
 
             return ivB64 + "." + cipherB64 + "." + sigB64;
@@ -153,10 +152,9 @@ var Csrf = (function () {
                 var sigB64 = parts[2];
 
                 var secret = getSecretKey();
-                var encKeyBytes = hmacSha256Bytes("csrf-enc:" + secret, secret);
-                var macKeyBytes = hmacSha256Bytes("csrf-mac:" + secret, secret);
+                var derived = getDerivedKeys(secret);
 
-                var expectedSigBytes = hmacSha256Bytes(ivB64 + "." + cipherB64, macKeyBytes);
+                var expectedSigBytes = hmacSha256Bytes(ivB64 + "." + cipherB64, derived.macKeyBytes);
                 var expectedSigB64 = bytesToBase64Url(expectedSigBytes);
 
                 if (!constantTimeEqual(sigB64, expectedSigB64)) {
@@ -165,7 +163,7 @@ var Csrf = (function () {
 
                 var ivBytes = base64UrlToBytes(ivB64);
                 var cipherBytes = base64UrlToBytes(cipherB64);
-                var plainBytes = xorCipherBytes(cipherBytes, encKeyBytes, ivBytes);
+                var plainBytes = xorCipherBytes(cipherBytes, derived.encKeyBytes, ivBytes);
                 var parsed = JSON.parse(utf8BytesToString(plainBytes));
 
                 if (!parsed || typeof parsed !== "object" || !parsed.exp) {

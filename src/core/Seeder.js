@@ -100,7 +100,9 @@ var DatabaseSeeder = {
     ],
 
     run: function () {
-        var targetSeeders = this.order.slice();
+        var targetSeeders = this.order.filter(function (name) {
+            return Boolean(Seeder._registry[name]);
+        });
 
         Seeder.allNames().forEach(function (name) {
             if (name !== "DatabaseSeeder" && targetSeeders.indexOf(name) === -1) {

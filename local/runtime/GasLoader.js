@@ -1,25 +1,36 @@
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const crypto = require("crypto");
 const { installGasGlobals } = require("./GasMocks");
 const { loadLocalEnv } = require("./EnvLoader");
 
-const ROOT_DIR = path.join(__dirname, "../..");
+const ROOT_DIR = path.resolve(__dirname, "../..");
 const SRC_DIR = path.join(ROOT_DIR, "src");
 const ENV_FILE = path.join(ROOT_DIR, ".env");
 
 const REQUIRED_CORE = [
-    "config/config.js",
-    "core/database.js",
-    "core/foglobal.js",
-    "core/Core_View.js",
-    "core/hash.js",
-    "core/crud.js",
-    "core/Core_Router.js",
-    "core/Database_Migration.js",
-    "core/Database_Seeder.js",
-    "core/Controller_Base.js",
-    "middleware/middleware.js"
+    "config/Config.js",
+    "core/Database.js",
+    "core/Helpers.js",
+    "core/Validator.js",
+    "core/Response.js",
+    "core/View.js",
+    "core/Hash.js",
+    "core/Csrf.js",
+    "core/SheetStore.js",
+    "core/Request.js",
+    "core/Router.js",
+    "core/Migration.js",
+    "core/Seeder.js",
+    "core/Model.js",
+    "core/Controller.js",
+    "middleware/Authenticate.js",
+    "core/Workspace.js"
+];
+
+const OPTIONAL_CORE = [
+    "core/CompiledViews.js"
 ];
 
 const LAYER_FOLDERS = [
@@ -38,9 +49,16 @@ const OVERRIDABLE_ENV_KEYS = [
     "APP_MODE",
     "APP_ENV",
     "APP_DEBUG",
+    "APP_KEY",
+    "API_PREFIX",
+    "SESSION_TTL_MINUTES",
     "SHEET_ID",
     "BASE_URL"
 ];
+
+const CLEARABLE_EMPTY_KEYS = new Set([
+    "API_PREFIX"
+]);
 
 function getJsFilesRecursive(dir) {
     if (!fs.existsSync(dir)) return [];
@@ -68,17 +86,24 @@ function hydrateLocalEnvToProperties() {
         }
     }
 
-    const keys = Object.keys(mergedEnv);
-    if (keys.length === 0) return;
-
     if (typeof PropertiesService !== "undefined" && PropertiesService.getScriptProperties) {
         const props = PropertiesService.getScriptProperties();
         const updates = {};
 
-        for (const key of keys) {
+        for (const key of Object.keys(mergedEnv)) {
             const val = String(mergedEnv[key] ?? "").trim();
-            if (val === "") continue;
+            if (val === "") {
+                if (CLEARABLE_EMPTY_KEYS.has(key)) {
+                    updates[key] = "";
+                }
+                continue;
+            }
             updates[key] = val;
+        }
+
+        const existingKey = typeof props.getProperty === "function" ? props.getProperty("APP_KEY") : null;
+        if (!updates.APP_KEY && (!existingKey || String(existingKey).trim() === "")) {
+            updates.APP_KEY = "base64:" + crypto.randomBytes(32).toString("base64");
         }
 
         if (Object.keys(updates).length > 0 && typeof props.setProperties === "function") {
@@ -132,6 +157,10 @@ function bootGasRuntime() {
     }
 
     for (const relPath of REQUIRED_CORE) {
+        loadFile(path.join(SRC_DIR, relPath));
+    }
+
+    for (const relPath of OPTIONAL_CORE) {
         loadFile(path.join(SRC_DIR, relPath));
     }
 

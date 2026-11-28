@@ -254,14 +254,14 @@ var View = (function () {
         }
 
         while (pos < len) {
-            // 1. Escaped blade literal: @{{ ... }}
+            // Escaped blade literal: @{{ ... }}
             if (cleaned.slice(pos, pos + 3) === "@{{") {
                 textBuffer += "{{";
                 pos += 3;
                 continue;
             }
 
-            // 2. Raw unescaped echo: {!! ... !!}
+            // Raw unescaped echo: {!! ... !!}
             if (cleaned.slice(pos, pos + 3) === "{!!") {
                 var rawEnd = cleaned.indexOf("!!}", pos + 3);
                 if (rawEnd !== -1) {
@@ -273,7 +273,7 @@ var View = (function () {
                 }
             }
 
-            // 3. Auto-escaped echo: {{ ... }}
+            // Auto-escaped echo: {{ ... }}
             if (cleaned.slice(pos, pos + 2) === "{{") {
                 var escEnd = cleaned.indexOf("}}", pos + 2);
                 if (escEnd !== -1) {
@@ -285,10 +285,9 @@ var View = (function () {
                 }
             }
 
-            // 4. Blade directives: @directive
+            // Blade directives: @directive
             if (cleaned.charAt(pos) === "@") {
                 var prevChar = pos > 0 ? cleaned.charAt(pos - 1) : "";
-                // Abaikan email seperti user@domain.com
                 if (/[a-zA-Z0-9._-]/.test(prevChar)) {
                     textBuffer += "@";
                     pos++;

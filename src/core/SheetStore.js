@@ -206,15 +206,33 @@ function getSchemaMetadata(forceRebuild) {
     return schema;
 }
 
+function isModelTimestampsEnabled(sheetName) {
+    if (typeof Model !== "undefined" && typeof Model.hasTimestamps === "function") {
+        return Model.hasTimestamps(sheetName);
+    }
+    return true;
+}
+
+function isModelSoftDeletesEnabled(sheetName) {
+    if (typeof Model !== "undefined" && typeof Model.usesSoftDeletes === "function") {
+        return Model.usesSoftDeletes(sheetName);
+    }
+    return true;
+}
+
 function getRowIndex(sheetName, forceRebuild) {
-    if (!forceRebuild && _REQ_MEM.indexes[sheetName]) {
-        return _REQ_MEM.indexes[sheetName];
+    var useSoftDeletes = isModelSoftDeletesEnabled(sheetName);
+    var memKey = (useSoftDeletes ? "SD_" : "RAW_") + sheetName;
+    var cacheKey = (useSoftDeletes ? "IDX_" : "IDX_RAW_") + sheetName;
+
+    if (!forceRebuild && _REQ_MEM.indexes[memKey]) {
+        return _REQ_MEM.indexes[memKey];
     }
 
     if (!forceRebuild) {
-        var cachedIdx = ChunkedCache.get("IDX_" + sheetName);
+        var cachedIdx = ChunkedCache.get(cacheKey);
         if (cachedIdx) {
-            _REQ_MEM.indexes[sheetName] = cachedIdx;
+            _REQ_MEM.indexes[memKey] = cachedIdx;
             return cachedIdx;
         }
     }
@@ -230,14 +248,14 @@ function getRowIndex(sheetName, forceRebuild) {
     };
 
     if (!rows || rows.length < 2) {
-        _REQ_MEM.indexes[sheetName] = indexObj;
-        ChunkedCache.put("IDX_" + sheetName, indexObj, CACHE_CONFIG.INDEX_TTL);
+        _REQ_MEM.indexes[memKey] = indexObj;
+        ChunkedCache.put(cacheKey, indexObj, CACHE_CONFIG.INDEX_TTL);
         return indexObj;
     }
 
     var headers = rows[0];
     var idIdx = headers.indexOf("id");
-    var deletedIdx = headers.indexOf("deleted_at");
+    var deletedIdx = useSoftDeletes ? headers.indexOf("deleted_at") : -1;
 
     var fkCols = [];
     for (var h = 0; h < headers.length; h++) {
@@ -291,15 +309,17 @@ function getRowIndex(sheetName, forceRebuild) {
         }
     }
 
-    _REQ_MEM.indexes[sheetName] = indexObj;
-    ChunkedCache.put("IDX_" + sheetName, indexObj, CACHE_CONFIG.INDEX_TTL);
+    _REQ_MEM.indexes[memKey] = indexObj;
+    ChunkedCache.put(cacheKey, indexObj, CACHE_CONFIG.INDEX_TTL);
     return indexObj;
 }
 
 function invalidateSheetCache(sheetName, invalidateSchema) {
     delete _REQ_MEM.rows[sheetName];
-    delete _REQ_MEM.indexes[sheetName];
+    delete _REQ_MEM.indexes["SD_" + sheetName];
+    delete _REQ_MEM.indexes["RAW_" + sheetName];
     ChunkedCache.remove("IDX_" + sheetName);
+    ChunkedCache.remove("IDX_RAW_" + sheetName);
 
     if (invalidateSchema) {
         _REQ_MEM.schema = null;
@@ -554,12 +574,13 @@ function find(sheet_name, id, options) {
     }
 
     var opts = options || {};
+    var useSoftDeletes = isModelSoftDeletesEnabled(sheet_name);
     var withOpt = opts.with !== undefined ? opts.with : "none";
     var withPassword = opts.with_password === true;
     var makeVisible = opts.make_visible || [];
     var makeHidden = opts.make_hidden || [];
-    var withTrashed = opts.with_trashed === true;
-    var onlyTrashed = opts.only_trashed === true;
+    var withTrashed = useSoftDeletes && opts.with_trashed === true;
+    var onlyTrashed = useSoftDeletes && opts.only_trashed === true;
 
     if (withOpt === "none" && !withTrashed && !onlyTrashed) {
         var getSheet = sheet().getSheetByName(sheet_name);
@@ -616,6 +637,8 @@ function create(sheet_name, payload) {
         var sheetMeta = schema.sheets[sheet_name] || getSchemaMetadata(true).sheets[sheet_name];
         var headers = sheetMeta.headers;
         var data = prepareModelInputData(sheet_name, payload.data);
+        var useTimestamps = isModelTimestampsEnabled(sheet_name);
+        var useSoftDeletes = isModelSoftDeletesEnabled(sheet_name);
 
         for (var b = 0; b < sheetMeta.belongsTo.length; b++) {
             var rel = sheetMeta.belongsTo[b];
@@ -638,6 +661,7 @@ function create(sheet_name, payload) {
 
         var currentIndex = getRowIndex(sheet_name, true);
         var defId = currentIndex.maxId + 1;
+        var now = new Date();
 
         var values = [];
         for (var i = 0; i < headers.length; i++) {
@@ -646,9 +670,9 @@ function create(sheet_name, payload) {
             if (colName === "id") {
                 values.push(defId);
             } else if (colName === "created_at" || colName === "updated_at") {
-                values.push(new Date());
+                values.push(useTimestamps ? now : (data.hasOwnProperty(colName) ? data[colName] : ""));
             } else if (colName === "deleted_at") {
-                values.push("");
+                values.push(useSoftDeletes ? "" : (data.hasOwnProperty(colName) ? data[colName] : ""));
             } else {
                 values.push(data.hasOwnProperty(colName) ? data[colName] : "");
             }
@@ -666,7 +690,15 @@ function create(sheet_name, payload) {
         invalidateSheetCache(sheet_name, false);
 
         var responseData = Object.assign({}, data, { id: defId });
-        if (headers.indexOf("deleted_at") !== -1 && responseData.deleted_at === undefined) {
+        if (useTimestamps) {
+            if (headers.indexOf("created_at") !== -1 && responseData.created_at === undefined) {
+                responseData.created_at = now;
+            }
+            if (headers.indexOf("updated_at") !== -1 && responseData.updated_at === undefined) {
+                responseData.updated_at = now;
+            }
+        }
+        if (useSoftDeletes && headers.indexOf("deleted_at") !== -1 && responseData.deleted_at === undefined) {
             responseData.deleted_at = "";
         }
         applyModelRowFormat(sheet_name, responseData, false);
@@ -693,6 +725,8 @@ function bulkCreate(sheet_name, payloadOrRecords) {
         var schema = getSchemaMetadata();
         var sheetMeta = schema.sheets[sheet_name] || getSchemaMetadata(true).sheets[sheet_name];
         var headers = sheetMeta.headers;
+        var useTimestamps = isModelTimestampsEnabled(sheet_name);
+        var useSoftDeletes = isModelSoftDeletesEnabled(sheet_name);
 
         var fkIndexes = {};
         for (var b = 0; b < sheetMeta.belongsTo.length; b++) {
@@ -750,9 +784,9 @@ function bulkCreate(sheet_name, payloadOrRecords) {
                 if (colName === "id") {
                     rowValues.push(assignedId);
                 } else if (colName === "created_at" || colName === "updated_at") {
-                    rowValues.push(now);
+                    rowValues.push(useTimestamps ? now : (item.hasOwnProperty(colName) ? item[colName] : ""));
                 } else if (colName === "deleted_at") {
-                    rowValues.push("");
+                    rowValues.push(useSoftDeletes ? "" : (item.hasOwnProperty(colName) ? item[colName] : ""));
                 } else {
                     var cellVal = item.hasOwnProperty(colName) ? item[colName] : "";
                     if (/^(0\d+|\+\d+)/.test(String(cellVal))) {
@@ -766,7 +800,15 @@ function bulkCreate(sheet_name, payloadOrRecords) {
             rowsMatrix.push(rowValues);
 
             var cleanItem = Object.assign({}, item, { id: assignedId });
-            if (headers.indexOf("deleted_at") !== -1 && cleanItem.deleted_at === undefined) {
+            if (useTimestamps) {
+                if (headers.indexOf("created_at") !== -1 && cleanItem.created_at === undefined) {
+                    cleanItem.created_at = now;
+                }
+                if (headers.indexOf("updated_at") !== -1 && cleanItem.updated_at === undefined) {
+                    cleanItem.updated_at = now;
+                }
+            }
+            if (useSoftDeletes && headers.indexOf("deleted_at") !== -1 && cleanItem.deleted_at === undefined) {
                 cleanItem.deleted_at = "";
             }
             applyModelRowFormat(sheet_name, cleanItem, false);
@@ -797,6 +839,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
     var sheetMeta = schema.sheets[sheet_name] || getSchemaMetadata(true).sheets[sheet_name];
     var headers = sheetMeta.headers;
     var colMap = sheetMeta.colMap;
+    var useSoftDeletes = isModelSoftDeletesEnabled(sheet_name);
 
     var filters = flt ? Object.assign({}, flt) : {};
     var groupBy = filters.group_by || null;
@@ -834,9 +877,9 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         if (makeVisible[mvi]) delete effectiveHiddenMap[String(makeVisible[mvi])];
     }
 
-    var withTrashed = filters.with_trashed === true || String(filters.with_trashed) === "true";
-    var onlyTrashed = filters.only_trashed === true || String(filters.only_trashed) === "true";
-    var includeDeleted = withTrashed || onlyTrashed;
+    var withTrashed = useSoftDeletes && (filters.with_trashed === true || String(filters.with_trashed) === "true");
+    var onlyTrashed = useSoftDeletes && (filters.only_trashed === true || String(filters.only_trashed) === "true");
+    var includeDeleted = !useSoftDeletes || withTrashed || onlyTrashed;
 
     function isFalseFlag(val) {
         return val === false || String(val).toLowerCase() === "false" || val === 0 || val === "0";
@@ -1120,7 +1163,8 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         if (!relRows || relRows.length < 2) return null;
 
         var relHeaders = relRows[0];
-        var relDeletedIdx = relHeaders.indexOf("deleted_at");
+        var relUseSoftDeletes = isModelSoftDeletesEnabled(relDesc.targetTable);
+        var relDeletedIdx = relUseSoftDeletes ? relHeaders.indexOf("deleted_at") : -1;
 
         var matchColName = relDesc.type === "hasOne"
             ? (relDesc.foreignKey || "id")
@@ -1148,7 +1192,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         var candidatesByKey = {};
         for (var r = 1; r < relRows.length; r++) {
             var rRow = relRows[r];
-            if (!includeDeleted && relDeletedIdx !== -1 && rRow[relDeletedIdx] !== "") continue;
+            if (relUseSoftDeletes && !withTrashed && !onlyTrashed && relDeletedIdx !== -1 && rRow[relDeletedIdx] !== "") continue;
 
             var keyVal = rRow[matchColIdx];
             if (keyVal === null || keyVal === undefined || keyVal === "") continue;
@@ -1199,7 +1243,8 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         if (!childRows || childRows.length < 2) return null;
 
         var childHeaders = childRows[0];
-        var deletedIndex = childHeaders.indexOf("deleted_at");
+        var childUseSoftDeletes = isModelSoftDeletesEnabled(childSheetName);
+        var deletedIndex = childUseSoftDeletes ? childHeaders.indexOf("deleted_at") : -1;
         var childGroupMap = {};
 
         if (relDesc.type === "belongsToMany") {
@@ -1215,7 +1260,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
             var targetById = {};
             for (var cr = 1; cr < childRows.length; cr++) {
                 var cRow = childRows[cr];
-                if (!includeDeleted && deletedIndex !== -1 && cRow[deletedIndex] !== "") continue;
+                if (childUseSoftDeletes && !withTrashed && !onlyTrashed && deletedIndex !== -1 && cRow[deletedIndex] !== "") continue;
                 var cObj = {};
                 for (var ch = 0; ch < childHeaders.length; ch++) {
                     cObj[childHeaders[ch]] = cRow[ch];
@@ -1250,7 +1295,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
             for (var hr = 1; hr < childRows.length; hr++) {
                 var hRow = childRows[hr];
-                if (!includeDeleted && deletedIndex !== -1 && hRow[deletedIndex] !== "") continue;
+                if (childUseSoftDeletes && !withTrashed && !onlyTrashed && deletedIndex !== -1 && hRow[deletedIndex] !== "") continue;
 
                 var fkValue = hRow[fkIndex];
                 if (fkValue === null || fkValue === undefined || fkValue === "") continue;
@@ -1385,7 +1430,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
 
     var candidateArrayIndices = null;
 
-    if (!includeDeleted) {
+    if (!useSoftDeletes || !includeDeleted) {
         if (customFilters.id) {
             var idOp = typeof customFilters.id === "object" ? String(customFilters.id.operator || "=") : "=";
             var idVal = typeof customFilters.id === "object" ? customFilters.id.value : customFilters.id;
@@ -1416,7 +1461,7 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
     }
 
     var data = [];
-    var deletedAtIndex = colMap.hasOwnProperty("deleted_at") ? colMap["deleted_at"] : -1;
+    var deletedAtIndex = (useSoftDeletes && colMap.hasOwnProperty("deleted_at")) ? colMap["deleted_at"] : -1;
     var scanLength = candidateArrayIndices !== null ? candidateArrayIndices.length : (rows.length - 1);
 
     for (var idx = 0; idx < scanLength; idx++) {
@@ -1424,15 +1469,17 @@ function read(sheet_name, flt = null, page = 1, per_page = null, sort = null) {
         var row = rows[rowIdx];
         if (!row) continue;
 
-        var isDeleted = deletedAtIndex !== -1 &&
-            row[deletedAtIndex] !== "" &&
-            row[deletedAtIndex] !== null &&
-            row[deletedAtIndex] !== undefined;
+        if (useSoftDeletes) {
+            var isDeleted = deletedAtIndex !== -1 &&
+                row[deletedAtIndex] !== "" &&
+                row[deletedAtIndex] !== null &&
+                row[deletedAtIndex] !== undefined;
 
-        if (onlyTrashed) {
-            if (!isDeleted) continue;
-        } else if (!withTrashed && isDeleted) {
-            continue;
+            if (onlyTrashed) {
+                if (!isDeleted) continue;
+            } else if (!withTrashed && isDeleted) {
+                continue;
+            }
         }
 
         var isMatch = true;
@@ -1749,6 +1796,8 @@ function update(sheet_name, payload) {
         var headers = sheetMeta.headers;
         var colMap = sheetMeta.colMap;
         var data = prepareModelInputData(sheet_name, payload.data);
+        var useTimestamps = isModelTimestampsEnabled(sheet_name);
+        var useSoftDeletes = isModelSoftDeletesEnabled(sheet_name);
 
         if (!colMap.hasOwnProperty("id")) {
             return { status: false, message: "Column 'id' not found." };
@@ -1777,7 +1826,7 @@ function update(sheet_name, payload) {
         var targetSheetRow = rowIndex.byId[idStr];
 
         if (!targetSheetRow) {
-            if (rowIndex.trashedById[idStr]) {
+            if (useSoftDeletes && rowIndex.trashedById[idStr]) {
                 return { status: false, message: "Data not available or deleted." };
             }
             return { status: false, message: "Data not available." };
@@ -1795,7 +1844,7 @@ function update(sheet_name, payload) {
         var updatedRow = rows[targetSheetRow - 1].slice();
 
         for (var key in data) {
-            if (key === "id" || key === "deleted_at") continue;
+            if (key === "id" || (useSoftDeletes && key === "deleted_at")) continue;
             if (colMap.hasOwnProperty(key)) {
                 var cIdx = colMap[key];
                 var val = data[key];
@@ -1808,14 +1857,20 @@ function update(sheet_name, payload) {
             }
         }
 
-        if (colMap.hasOwnProperty("updated_at")) {
+        if (useTimestamps && colMap.hasOwnProperty("updated_at")) {
             updatedRow[colMap["updated_at"]] = new Date();
         }
 
         getSheet.getRange(targetSheetRow, 1, 1, headers.length).setValues([updatedRow]);
-
         invalidateSheetCache(sheet_name, false);
-        return { status: true, message: "Data successfully updated." };
+
+        var responseData = {};
+        for (var h = 0; h < headers.length; h++) {
+            responseData[headers[h]] = updatedRow[h];
+        }
+        applyModelRowFormat(sheet_name, responseData, false);
+
+        return { status: true, message: "Data successfully updated.", data: responseData };
     });
 }
 
@@ -1832,6 +1887,7 @@ function destroy(sheet_name, id) {
         var schema = getSchemaMetadata();
         var sheetMeta = schema.sheets[sheet_name] || getSchemaMetadata(true).sheets[sheet_name];
         var colMap = sheetMeta.colMap;
+        var useSoftDeletes = isModelSoftDeletesEnabled(sheet_name);
 
         if (!colMap.hasOwnProperty("id")) {
             return { status: false, message: "Column 'id' not found." };
@@ -1842,7 +1898,7 @@ function destroy(sheet_name, id) {
         var targetSheetRow = rowIndex.byId[idStr];
 
         if (!targetSheetRow) {
-            if (rowIndex.trashedById[idStr]) {
+            if (useSoftDeletes && rowIndex.trashedById[idStr]) {
                 return { status: false, message: "Data not available or deleted." };
             }
             return { status: false, message: "Data not available." };
@@ -1857,7 +1913,7 @@ function destroy(sheet_name, id) {
             }
         }
 
-        if (colMap.hasOwnProperty("deleted_at")) {
+        if (useSoftDeletes && colMap.hasOwnProperty("deleted_at")) {
             getSheet.getRange(targetSheetRow, colMap["deleted_at"] + 1).setValue(new Date());
             invalidateSheetCache(sheet_name, false);
             return { status: true, message: "Data successfully deleted." };
@@ -1882,11 +1938,13 @@ function restore(sheet_name, id) {
         var schema = getSchemaMetadata();
         var sheetMeta = schema.sheets[sheet_name] || getSchemaMetadata(true).sheets[sheet_name];
         var colMap = sheetMeta.colMap;
+        var useSoftDeletes = isModelSoftDeletesEnabled(sheet_name);
+        var useTimestamps = isModelTimestampsEnabled(sheet_name);
 
         if (!colMap.hasOwnProperty("id")) {
             return { status: false, message: "Column 'id' not found." };
         }
-        if (!colMap.hasOwnProperty("deleted_at")) {
+        if (!useSoftDeletes || !colMap.hasOwnProperty("deleted_at")) {
             return { status: false, message: "Soft deletes are not enabled on this sheet." };
         }
 
@@ -1911,7 +1969,7 @@ function restore(sheet_name, id) {
         }
 
         getSheet.getRange(targetSheetRow, colMap["deleted_at"] + 1).setValue("");
-        if (colMap.hasOwnProperty("updated_at")) {
+        if (useTimestamps && colMap.hasOwnProperty("updated_at")) {
             getSheet.getRange(targetSheetRow, colMap["updated_at"] + 1).setValue(new Date());
         }
 

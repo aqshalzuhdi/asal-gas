@@ -1,10 +1,25 @@
 class HomeController extends Controller {
-    model = User;
-    with = [];
+    _extractInput(request) {
+        const nested = request.input("data");
+        const raw = (nested && typeof nested === "object")
+            ? nested
+            : request.all();
 
-    index(ctx) {
-        const res = super.index(ctx);
-        if (ctx.wantsJson()) return res;
+        return {
+            name: raw.name !== undefined ? String(raw.name).trim() : "",
+            username: raw.username !== undefined ? String(raw.username).trim() : "",
+            email: raw.email !== undefined ? String(raw.email).trim().toLowerCase() : "",
+            password: raw.password !== undefined ? String(raw.password) : ""
+        };
+    }
+
+    _latestUsersPage() {
+        return User.orderBy("id", "desc").paginate(10, 1);
+    }
+
+    index(request) {
+        const res = User.datatable(request);
+        if (request.wantsJson()) return res;
 
         return view("home", {
             title: "Home",
@@ -14,7 +29,7 @@ class HomeController extends Controller {
         });
     }
 
-    create(ctx) {
+    create(request) {
         return view("users.create", {
             title: "Add User",
             errors: {},
@@ -22,18 +37,8 @@ class HomeController extends Controller {
         });
     }
 
-    store(ctx) {
-        // Support payloads from HTML <form> (ctx.payload.name) and JSON API (ctx.payload.data.name)
-        const rawInput = (ctx.payload && ctx.payload.data && typeof ctx.payload.data === "object")
-            ? ctx.payload.data
-            : (ctx.payload || {});
-
-        const input = {
-            name: rawInput.name !== undefined ? String(rawInput.name).trim() : "",
-            username: rawInput.username !== undefined ? String(rawInput.username).trim() : "",
-            email: rawInput.email !== undefined ? String(rawInput.email).trim().toLowerCase() : "",
-            password: rawInput.password !== undefined ? String(rawInput.password) : ""
-        };
+    store(request) {
+        const input = this._extractInput(request);
 
         const validator = Validator.make(input, {
             name: "required|string|min:3|max:100",
@@ -43,7 +48,7 @@ class HomeController extends Controller {
         });
 
         if (validator.fails()) {
-            if (ctx.wantsJson()) {
+            if (request.wantsJson()) {
                 return failResponse(validator.firstError(), 422, {
                     errors: validator.errors()
                 });
@@ -60,7 +65,7 @@ class HomeController extends Controller {
             }, 422);
         }
 
-        const created = this.model.create({
+        const created = User.create({
             name: input.name,
             username: input.username,
             email: input.email,
@@ -68,7 +73,7 @@ class HomeController extends Controller {
         });
 
         if (!created || created.status === false) {
-            if (ctx.wantsJson()) {
+            if (request.wantsJson()) {
                 return created;
             }
 
@@ -84,15 +89,11 @@ class HomeController extends Controller {
             }, 400);
         }
 
-        if (ctx.wantsJson()) {
+        if (request.wantsJson()) {
             return created;
         }
 
-        const listRes = super.index({
-            params: { page: 1, per_page: 10, sort: "-id" },
-            routeParams: {},
-            payload: {}
-        });
+        const listRes = this._latestUsersPage();
 
         return view("home", {
             title: "Home",
@@ -103,12 +104,12 @@ class HomeController extends Controller {
         });
     }
 
-    edit(ctx) {
-        const id = ctx.routeParams.id || ctx.params.id;
-        const item = this.model.find(id);
+    edit(request, id) {
+        const targetId = id || request.input("id");
+        const item = User.find(targetId);
 
         if (!item) {
-            return failResponse("User with ID " + id + " not found.", 404);
+            return failResponse("User with ID " + targetId + " not found.", 404);
         }
 
         return view("users.edit", {
@@ -119,27 +120,16 @@ class HomeController extends Controller {
         });
     }
 
-    update(ctx) {
-        const id = ctx.routeParams.id ||
-            (ctx.payload && ctx.payload.data && ctx.payload.data.id) ||
-            (ctx.payload && ctx.payload.id) ||
-            ctx.params.id;
+    update(request, id) {
+        const nested = request.input("data");
+        const targetId = id || (nested && nested.id) || request.input("id");
 
-        const existing = this.model.find(id);
+        const existing = User.find(targetId);
         if (!existing) {
-            return failResponse("User with ID " + id + " not found.", 404);
+            return failResponse("User with ID " + targetId + " not found.", 404);
         }
 
-        const rawInput = (ctx.payload && ctx.payload.data && typeof ctx.payload.data === "object")
-            ? ctx.payload.data
-            : (ctx.payload || {});
-
-        const input = {
-            name: rawInput.name !== undefined ? String(rawInput.name).trim() : "",
-            username: rawInput.username !== undefined ? String(rawInput.username).trim() : "",
-            email: rawInput.email !== undefined ? String(rawInput.email).trim().toLowerCase() : "",
-            password: rawInput.password !== undefined ? String(rawInput.password) : ""
-        };
+        const input = this._extractInput(request);
 
         const validator = Validator.make(input, {
             name: "required|string|min:3|max:100",
@@ -149,7 +139,7 @@ class HomeController extends Controller {
         });
 
         if (validator.fails()) {
-            if (ctx.wantsJson()) {
+            if (request.wantsJson()) {
                 return failResponse(validator.firstError(), 422, {
                     errors: validator.errors()
                 });
@@ -177,10 +167,10 @@ class HomeController extends Controller {
             recordData.password = Hash.make(input.password);
         }
 
-        const updated = this.model.update(existing.id, recordData);
+        const updated = User.update(existing.id, recordData);
 
         if (!updated || updated.status === false) {
-            if (ctx.wantsJson()) return updated;
+            if (request.wantsJson()) return updated;
 
             return view("users.edit", {
                 title: "Edit User",
@@ -195,13 +185,9 @@ class HomeController extends Controller {
             }, 400);
         }
 
-        if (ctx.wantsJson()) return updated;
+        if (request.wantsJson()) return updated;
 
-        const listRes = super.index({
-            params: { page: 1, per_page: 10, sort: "-id" },
-            routeParams: {},
-            payload: {}
-        });
+        const listRes = this._latestUsersPage();
 
         return view("home", {
             title: "Home",
@@ -212,26 +198,20 @@ class HomeController extends Controller {
         });
     }
 
-    destroy(ctx) {
-        const id = ctx.routeParams.id ||
-            (ctx.payload && ctx.payload.id) ||
-            ctx.params.id;
+    destroy(request, id) {
+        const targetId = id || request.input("id");
 
-        const existing = this.model.find(id);
+        const existing = User.find(targetId);
         if (!existing) {
-            return failResponse("User with ID " + id + " not found.", 404);
+            return failResponse("User with ID " + targetId + " not found.", 404);
         }
 
-        const deleted = this.model.destroy(existing.id);
+        const deleted = User.destroy(existing.id);
 
         if (!deleted || deleted.status === false) {
-            if (ctx.wantsJson()) return deleted;
+            if (request.wantsJson()) return deleted;
 
-            const errList = super.index({
-                params: { page: 1, per_page: 10, sort: "-id" },
-                routeParams: {},
-                payload: {}
-            });
+            const errList = this._latestUsersPage();
 
             return view("home", {
                 title: "Home",
@@ -242,13 +222,9 @@ class HomeController extends Controller {
             }, 400);
         }
 
-        if (ctx.wantsJson()) return deleted;
+        if (request.wantsJson()) return deleted;
 
-        const listRes = super.index({
-            params: { page: 1, per_page: 10, sort: "-id" },
-            routeParams: {},
-            payload: {}
-        });
+        const listRes = this._latestUsersPage();
 
         return view("home", {
             title: "Home",

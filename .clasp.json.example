@@ -12,21 +12,23 @@
         ".json"
     ],
     "filePushOrder": [
-        "src/config/config.js",
-        "src/core/database.js",
-        "src/core/foglobal.js",
-        "src/core/Core_View.js",
-        "src/core/Core_Views_Compiled.js",
-        "src/core/hash.js",
+        "src/config/Config.js",
+        "src/core/Database.js",
+        "src/core/Helpers.js",
+        "src/core/Validator.js",
+        "src/core/Response.js",
+        "src/core/View.js",
+        "src/core/CompiledViews.js",
+        "src/core/Hash.js",
         "src/core/Csrf.js",
-        "src/core/crud.js",
-        "src/core/Core_Router.js",
-        "src/core/Database_Migration.js",
-        "src/core/Database_Seeder.js",
-        "src/core/Model_Base.js",
-        "src/core/Controller_Base.js",
-        "src/middleware/middleware.js",
-        "src/core/env_sync.js"
+        "src/core/SheetStore.js",
+        "src/core/Router.js",
+        "src/core/Migration.js",
+        "src/core/Seeder.js",
+        "src/core/Model.js",
+        "src/core/Controller.js",
+        "src/middleware/Authenticate.js",
+        "src/core/Workspace.js"
     ],
     "skipSubdirectories": false
 }

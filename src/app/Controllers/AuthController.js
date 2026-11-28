@@ -1,7 +1,9 @@
 class AuthController extends Controller {
-    login(ctx) {
-        const payload = ctx.payload || {};
-        const input = (payload.data && typeof payload.data === "object") ? payload.data : payload;
+    login(request) {
+        const nested = request.input("data");
+        const input = (nested && typeof nested === "object")
+            ? nested
+            : request.only(["username", "password"]);
 
         const validation = Validator.make(input, {
             username: "required|string",
@@ -53,11 +55,11 @@ class AuthController extends Controller {
         return { status: false, code: 401, message: "Unauthorized" };
     }
 
-    logout(ctx) {
-        const auth = ctx.auth;
+    logout(request) {
+        const auth = request.auth;
         const authUser = (auth && auth.data)
             ? (Array.isArray(auth.data) ? auth.data[0] : auth.data)
-            : null;
+            : (typeof request.user === "function" ? request.user() : null);
         const userId = authUser && authUser.id !== undefined ? authUser.id : null;
 
         if (!userId) {
@@ -75,10 +77,10 @@ class AuthController extends Controller {
         return logoutProcess;
     }
 
-    verifySession(ctx) {
-        if (!ctx.auth) {
+    verifySession(request) {
+        if (!request.auth) {
             return { status: false, code: 401, message: "Unauthorized" };
         }
-        return ctx.auth;
+        return request.auth;
     }
 }

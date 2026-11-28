@@ -175,6 +175,94 @@ class ModelQueryBuilder {
         return this.limit(count);
     }
 
+    datatable(requestOrParams) {
+        Model.resolve(this.ModelClass);
+        var table = this.ModelClass.getTable();
+
+        var rawInput = {};
+        if (requestOrParams && typeof requestOrParams === "object") {
+            if (typeof requestOrParams.all === "function") {
+                rawInput = Object.assign({}, requestOrParams.params || {}, requestOrParams.all());
+            } else if (requestOrParams.params && typeof requestOrParams.params === "object") {
+                rawInput = Object.assign({}, requestOrParams.params);
+            } else {
+                rawInput = Object.assign({}, requestOrParams);
+            }
+        }
+
+        var queryFilters = Object.assign({}, rawInput, this._filters);
+
+        if (this._relations.length > 0) {
+            var existingWith = [];
+            if (Array.isArray(queryFilters.with)) {
+                existingWith = queryFilters.with.slice();
+            } else if (typeof queryFilters.with === "string" && queryFilters.with !== "" && queryFilters.with !== "none") {
+                existingWith = queryFilters.with.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+            }
+            for (var r = 0; r < this._relations.length; r++) {
+                if (existingWith.indexOf(this._relations[r]) === -1) {
+                    existingWith.push(this._relations[r]);
+                }
+            }
+            queryFilters.with = existingWith;
+        } else if (queryFilters.with === undefined || queryFilters.with === null || queryFilters.with === "") {
+            var meta = Model.resolve(this.ModelClass);
+            queryFilters.with = (meta && Array.isArray(meta.defaultWith) && meta.defaultWith.length > 0)
+                ? meta.defaultWith
+                : "none";
+        }
+
+        if (this._withTrashed) {
+            queryFilters.with_trashed = true;
+        }
+        if (this._onlyTrashed) {
+            queryFilters.only_trashed = true;
+        }
+        if (this._unhidden.indexOf("password") !== -1 || this._unhidden.indexOf("*") !== -1) {
+            queryFilters.with_password = true;
+        }
+        if (this._unhidden.length > 0) {
+            queryFilters.make_visible = this._unhidden.slice();
+        }
+
+        var hasDtOrder = Array.isArray(queryFilters.order) && queryFilters.order.length > 0;
+        if (!hasDtOrder) {
+            var qKeys = Object.keys(queryFilters);
+            for (var k = 0; k < qKeys.length; k++) {
+                if (/^order\[\d+\][(column|dir|name)]$/.test(qKeys[k])) {
+                    hasDtOrder = true;
+                    break;
+                }
+            }
+        }
+
+        var sortToApply = (!hasDtOrder && !queryFilters.sort) ? this._sort : null;
+        var res = read(table, queryFilters, null, null, sortToApply);
+        if (!res || !res.status) {
+            return res;
+        }
+
+        if (this._postFilters.length > 0 && Array.isArray(res.data)) {
+            var filtered = [];
+            for (var i = 0; i < res.data.length; i++) {
+                if (this._matchesPostFilters(res.data[i])) {
+                    filtered.push(res.data[i]);
+                }
+            }
+            res.data = filtered;
+            res.recordsFiltered = filtered.length;
+            if (res.meta) {
+                res.meta.total = filtered.length;
+            }
+        }
+
+        if (res.draw === undefined) {
+            res.draw = parseInt(rawInput.draw, 10) || 0;
+        }
+
+        return res;
+    }
+
     _buildReadFilters() {
         var queryFilters = Object.assign({}, this._filters);
         queryFilters.with = "none";
@@ -529,6 +617,10 @@ class Model {
         return this.query().paginate(perPage, page);
     }
 
+    static datatable(requestOrParams) {
+        return this.query().datatable(requestOrParams);
+    }
+
     static find(id) {
         return this.query().find(id);
     }
@@ -675,6 +767,56 @@ Model._bypassMassAssignment = false;
         belongsToMany: true
     };
 
+    var NON_MODEL_GLOBALS = {
+        Controller: true,
+        BaseController: true,
+        Model: true,
+        ModelBase: true,
+        ModelQueryBuilder: true,
+        Request: true,
+        Route: true,
+        Schema: true,
+        Migration: true,
+        Seeder: true,
+        View: true,
+        Csrf: true,
+        Middlewares: true,
+        CONFIG: true,
+        CACHE_CONFIG: true,
+        ChunkedCache: true,
+        CacheService: true,
+        LockService: true,
+        PropertiesService: true,
+        SpreadsheetApp: true,
+        DriveApp: true,
+        UrlFetchApp: true,
+        HtmlService: true,
+        ContentService: true,
+        ScriptApp: true,
+        Utilities: true,
+        Session: true,
+        Logger: true,
+        JSON: true,
+        Object: true,
+        Array: true,
+        String: true,
+        Number: true,
+        Boolean: true,
+        Date: true,
+        Math: true,
+        RegExp: true,
+        Error: true,
+        TypeError: true,
+        RangeError: true,
+        SyntaxError: true,
+        Promise: true,
+        Map: true,
+        Set: true,
+        WeakMap: true,
+        WeakSet: true,
+        Function: true
+    };
+
     function toSnakeCase(str) {
         return String(str || "")
             .trim()
@@ -769,6 +911,15 @@ Model._bypassMassAssignment = false;
             }
         }
         return cleaned;
+    }
+
+    function normalizeBooleanOption(rawValue, defaultValue) {
+        if (rawValue === undefined || rawValue === null) return defaultValue;
+        if (typeof rawValue === "boolean") return rawValue;
+        var lower = String(rawValue).trim().toLowerCase();
+        if (lower === "false" || lower === "0" || lower === "no") return false;
+        if (lower === "true" || lower === "1" || lower === "yes") return true;
+        return Boolean(rawValue);
     }
 
     function validateModelSheetColumns(meta) {
@@ -926,6 +1077,11 @@ Model._bypassMassAssignment = false;
         var tableVal = ModelClass.table || instance.table || toPluralSnake(cleanName);
         var primaryKeyVal = ModelClass.primaryKey || instance.primaryKey || "id";
 
+        var rawTimestamps = ModelClass.timestamps !== undefined ? ModelClass.timestamps : instance.timestamps;
+        var rawSoftDeletes = ModelClass.softDeletes !== undefined ? ModelClass.softDeletes : instance.softDeletes;
+        var timestampsVal = normalizeBooleanOption(rawTimestamps, true);
+        var softDeletesVal = normalizeBooleanOption(rawSoftDeletes, true);
+
         var rawCasts = ModelClass.casts !== undefined ? ModelClass.casts : instance.casts;
         if (typeof rawCasts === "function") {
             rawCasts = rawCasts.call(instance);
@@ -948,6 +1104,8 @@ Model._bypassMassAssignment = false;
             modelName: cleanName,
             table: tableVal,
             primaryKey: primaryKeyVal,
+            timestamps: timestampsVal,
+            softDeletes: softDeletesVal,
             hasFillable: hasDefinedFillable,
             hasGuarded: hasDefinedGuarded,
             fillable: fillableVal,
@@ -1036,6 +1194,99 @@ Model._bypassMassAssignment = false;
 
     function forTable(tableName) {
         return resolveModel(tableName);
+    }
+
+    function hasTimestamps(modelOrName) {
+        var meta = resolveModel(modelOrName);
+        return meta ? meta.timestamps !== false : true;
+    }
+
+    function usesSoftDeletes(modelOrName) {
+        var meta = resolveModel(modelOrName);
+        return meta ? meta.softDeletes !== false : true;
+    }
+
+    function collectTargetSource(target) {
+        if (!target) return "";
+        if (typeof target === "string") {
+            var resolvedObj = lookupGlobalClass(target.trim());
+            return resolvedObj ? collectTargetSource(resolvedObj) : target;
+        }
+
+        var chunks = [];
+        if (typeof target === "function") {
+            try {
+                chunks.push(Function.prototype.toString.call(target));
+            } catch (_) { }
+            if (target.prototype) {
+                Object.getOwnPropertyNames(target.prototype).forEach(function (methodName) {
+                    if (methodName === "constructor") return;
+                    try {
+                        var desc = Object.getOwnPropertyDescriptor(target.prototype, methodName);
+                        if (desc && typeof desc.value === "function") {
+                            chunks.push(Function.prototype.toString.call(desc.value));
+                        }
+                    } catch (_) { }
+                });
+            }
+        } else if (typeof target === "object") {
+            if (target.constructor && target.constructor !== Object && typeof target.constructor === "function") {
+                chunks.push(collectTargetSource(target.constructor));
+            }
+            Object.keys(target).forEach(function (key) {
+                if (typeof target[key] === "function") {
+                    try {
+                        chunks.push(Function.prototype.toString.call(target[key]));
+                    } catch (_) { }
+                }
+            });
+        }
+
+        return chunks.join("\n");
+    }
+
+    function extractModelsFromTarget(target) {
+        var sourceText = collectTargetSource(target);
+        if (!sourceText) return [];
+
+        var matches = sourceText.match(/\b[A-Z][A-Za-z0-9_]*\b/g) || [];
+        var seenTokens = {};
+        var discovered = [];
+
+        for (var i = 0; i < matches.length; i++) {
+            var token = matches[i];
+            if (seenTokens[token] || NON_MODEL_GLOBALS[token]) continue;
+            seenTokens[token] = true;
+
+            var candidateCls = lookupGlobalClass(token);
+            if (!isModelClass(candidateCls) || candidateCls === Model) continue;
+
+            try {
+                var meta = registerModelClass(candidateCls);
+                if (meta) {
+                    discovered.push({
+                        modelName: meta.modelName,
+                        table: meta.table,
+                        error: null
+                    });
+                }
+            } catch (err) {
+                var fallbackTable = toPluralSnake(token);
+                try {
+                    var tmp = new candidateCls();
+                    if (candidateCls.table) fallbackTable = candidateCls.table;
+                    else if (tmp && tmp.table) fallbackTable = tmp.table;
+                } catch (_) { }
+
+                discovered.push({
+                    modelName: token,
+                    table: fallbackTable,
+                    error: err && err.message ? err.message : String(err)
+                });
+            }
+        }
+
+        return discovered;
     }
 
     function normalizeRelatedRef(related) {
@@ -1508,6 +1759,9 @@ Model._bypassMassAssignment = false;
 
     Model.resolve = resolveModel;
     Model.forTable = forTable;
+    Model.hasTimestamps = hasTimestamps;
+    Model.usesSoftDeletes = usesSoftDeletes;
+    Model.extractModelsFromTarget = extractModelsFromTarget;
     Model.getRelation = getRelation;
     Model.getAllRelations = getAllRelations;
     Model.applyOutputTransforms = applyOutputTransforms;

@@ -64,7 +64,7 @@ const ROOT_DIR = DETECTED_ROOT || path.resolve(process.cwd());
 const localGasBin = path.join(ROOT_DIR, "gas");
 
 if (!DETECTED_ROOT && !isSameFile(path.join(path.dirname(__filename), "gas"), __filename)) {
-    console.error("❌ Direktori saat ini bukan project Asal-GAS (file 'gas' atau '.clasp.json' tidak ditemukan).");
+    console.error("❌ Current directory is not an Asal-GAS project ('gas' or '.clasp.json' not found).");
     process.exit(1);
 }
 
@@ -92,7 +92,16 @@ try {
 } catch (_) { }
 
 const [, , command, ...rawArgs] = process.argv;
-const VALUE_FLAGS = new Set(["--id", "--method", "--remote", "--branch", "--repo", "--class"]);
+const VALUE_FLAGS = new Set([
+    "--id",
+    "--method",
+    "--remote",
+    "--branch",
+    "--repo",
+    "--class",
+    "--env-sync",
+    "--sheet"
+]);
 const flags = [];
 const positionalArgs = [];
 
@@ -115,13 +124,32 @@ const CLASP_FILE = path.join(ROOT_DIR, ".clasp.json");
 const CREDS_FILE = path.join(ROOT_DIR, "creds.json");
 
 const DEFAULT_FILE_PUSH_ORDER = [
+    "src/config/Config.js",
+    "src/core/Database.js",
+    "src/core/Helpers.js",
+    "src/core/Validator.js",
+    "src/core/Response.js",
+    "src/core/View.js",
+    "src/core/CompiledViews.js",
+    "src/core/Hash.js",
+    "src/core/Csrf.js",
+    "src/core/SheetStore.js",
+    "src/core/Router.js",
+    "src/core/Migration.js",
+    "src/core/Seeder.js",
+    "src/core/Model.js",
+    "src/core/Controller.js",
+    "src/middleware/Authenticate.js",
+    "src/core/Workspace.js"
+];
+
+const LEGACY_CORE_FILES = new Set([
     "src/config/config.js",
     "src/core/database.js",
     "src/core/foglobal.js",
     "src/core/Core_View.js",
     "src/core/Core_Views_Compiled.js",
     "src/core/hash.js",
-    "src/core/Csrf.js",
     "src/core/crud.js",
     "src/core/Core_Router.js",
     "src/core/Database_Migration.js",
@@ -130,7 +158,50 @@ const DEFAULT_FILE_PUSH_ORDER = [
     "src/core/Controller_Base.js",
     "src/middleware/middleware.js",
     "src/core/env_sync.js"
-];
+]);
+
+function quoteWindowsCmdArg(arg) {
+    const str = String(arg);
+    if (str === "") return '""';
+    if (!/[\s"&|<>^()%!]/.test(str)) return str;
+    return `"${str.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1")}"`;
+}
+
+function spawnBinSync(binName, args = [], options = {}) {
+    const isWin = process.platform === "win32";
+    if (isWin) {
+        const cmdBin = binName.endsWith(".cmd") ? binName : `${binName}.cmd`;
+        const fullCmd = [cmdBin, ...args.map(quoteWindowsCmdArg)].join(" ");
+        return spawnSync(fullCmd, {
+            cwd: ROOT_DIR,
+            shell: true,
+            ...options
+        });
+    }
+    return spawnSync(binName, args, {
+        cwd: ROOT_DIR,
+        shell: false,
+        ...options
+    });
+}
+
+function openExternalUrl(targetUrl) {
+    const isWin = process.platform === "win32";
+    const isMac = process.platform === "darwin";
+    try {
+        if (isWin) {
+            spawnSync(`start "" ${quoteWindowsCmdArg(targetUrl)}`, {
+                stdio: "ignore",
+                shell: true
+            });
+        } else {
+            spawnSync(isMac ? "open" : "xdg-open", [targetUrl], {
+                stdio: "ignore",
+                shell: false
+            });
+        }
+    } catch (_) { }
+}
 
 function toPascalCase(str) {
     return String(str || "")
@@ -182,23 +253,16 @@ function getFlagValue(flagName) {
     return inline ? inline.slice(prefix.length) : null;
 }
 
-function resolveControllerMode(defaultMode = "--web") {
-    const aliases = {
-        "--web": "--web",
-        "--plain": "--web",
-        "--api": "--api",
-        "--resource": "--api",
-        "-r": "--api",
-        "--hybrid": "--hybrid"
-    };
-
-    for (const f of flags) {
-        const key = f.toLowerCase();
-        if (aliases[key]) {
-            return aliases[key];
-        }
+function resolveControllerMode(defaultMode = "--plain") {
+    if (hasFlag("--resource", "-r")) {
+        return "--resource";
     }
-
+    if (hasFlag("--api")) {
+        return "--api";
+    }
+    if (hasFlag("--plain", "--web")) {
+        return "--plain";
+    }
     return defaultMode;
 }
 
@@ -209,19 +273,20 @@ Asal-GAS CLI:
   gas login                                                       # Authenticate Google account via clasp
   gas creds [-f|--force]                                          # Setup creds.json & authenticate clasp for remote execution
   gas key:generate [-f|--force]                                   # Generate APP_KEY in .env/.clasp.json & sync to Script Properties
-  gas push [-f|--force] [--seed] [--setup]                        # Compile views, prompt APP_KEY (first run), push & sync GAS
+  gas push [-f|--force] [--seed] [--setup] [--env-sync <mode>] [--sheet <mode>] [--fresh] [-y|--yes]
+                                                                  # Compile views, push & safely sync Script Properties
   gas pull                                                        # Pull remote source code from GAS into src/
   gas status                                                      # Check local vs remote file status
   gas open                                                        # Open project in Google Apps Script Web Editor
-  gas deploy [Description] [--migrate] [--seed] [--setup]         # Compile views, prompt APP_KEY (first run), push & deploy Web App
+  gas deploy [Description] [--migrate] [--seed] [--setup] [--env-sync <ask|keep|merge|overwrite>] [--sheet <ask|keep|env|generate>] [--fresh] [-y|--yes]
+                                                                  # Compile views, safely sync Script Properties & deploy Web App
   gas framework:update [--dry-run] [--commit] [--remote <name>] [--branch <branch|tag>] [--repo <url>]
-                                                                  # Merge framework updates & record Git merge history safely
+                                                                  # Merge framework updates, auto-install deps & record Git merge
 
-  gas make:module <Entity> [--api|--hybrid|--web]                 # Generate Model + Migration + Seeder + Controller
-  gas make:model <Name> [-m] [-c] [-s] [-r] [-a] [--api|--hybrid|--web]
-                                                                  # Create Model in src/app/Models/ (+ optional scaffolding)
+  gas make:module <Entity> [--api|-r|--resource]                  # Generate Model + Migration + Seeder + Controller
+  gas make:model <Name> [-m] [-c] [-s] [-r] [-a] [--api]          # Create Model in src/app/Models/ (+ optional scaffolding)
   gas make:migration <Name>                                       # Create migration in src/database/migrations/
-  gas make:controller <Name> [--web|--api|--hybrid]               # Create Web, API Resource, or Hybrid controller
+  gas make:controller <Name> [--api|-r|--resource]                # Create empty, API (5 methods), or Resource (7 methods) controller
   gas make:seeder <Name>                                          # Create seeder in src/database/seeders/
   gas make:view <Name>                                            # Create Blade-lite .gas.js view in src/resources/views/
   gas view:compile                                                # Compile src/resources/views/**/*.gas.js for GAS push
@@ -235,7 +300,7 @@ Asal-GAS CLI:
   gas migrate:remote:refresh [--seed] [--no-count]                # Roll back and re-run remote migrations (+ optional seeder)
 
   gas db:seed [Seeder] [--remote] [--no-count]                    # Run DatabaseSeeder (or specific seeder) locally or on remote GAS
-  gas db:seed:remote [Seeder] [--no-count]                        # Run DatabaseSeeder (or specific seeder) on remote GAS
+  gas db:seed:remote [Seeder] [--no-count]                        # Run DatabaseSeeder (or specific seeder) directly on remote GAS
   gas db:reindex                                                  # Rebuild local schema metadata and row indexes
 
   gas route:list [Filter] [--method <HTTP>]                       # List registered Web & API routes and middlewares
@@ -243,12 +308,15 @@ Asal-GAS CLI:
 `);
 }
 
-function runClaspCommand(claspCmd) {
-    try {
-        execSync(`npx clasp ${claspCmd}`, { stdio: "inherit", cwd: ROOT_DIR });
-    } catch (err) {
-        process.exit(err.status || 1);
+function runClaspArgs(args, options = {}) {
+    const res = spawnBinSync("npx", ["clasp", ...args], {
+        stdio: "inherit",
+        ...options
+    });
+    if (res.status !== 0) {
+        process.exit(res.status || 1);
     }
+    return res;
 }
 
 function ensureClaspConfigured() {
@@ -291,12 +359,12 @@ function initGasProject(titleInput) {
         return;
     }
 
-    const projectTitle = (titleInput || "Asal-GAS Backend").replace(/"/g, "");
+    const projectTitle = (titleInput || "Asal-GAS Backend").trim();
     const manifestPath = path.join(SRC_DIR, "appsscript.json");
     const manifestBackup = fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, "utf8") : null;
 
     console.log(`🚀 Creating Google Apps Script project "${projectTitle}"...`);
-    runClaspCommand(`create --type standalone --title "${projectTitle}" --rootDir ./src`);
+    runClaspArgs(["create", "--type", "standalone", "--title", projectTitle, "--rootDir", "./src"]);
 
     const nestedClaspFile = path.join(SRC_DIR, ".clasp.json");
     if (!fs.existsSync(CLASP_FILE) && fs.existsSync(nestedClaspFile)) {
@@ -332,16 +400,7 @@ function openGasEditor() {
 
     const editorUrl = `https://script.google.com/d/${scriptId}/edit`;
     console.log(`🔗 Opening GAS Editor: ${editorUrl}`);
-
-    const openCmd = process.platform === "win32"
-        ? `start "" "${editorUrl}"`
-        : process.platform === "darwin"
-            ? `open "${editorUrl}"`
-            : `xdg-open "${editorUrl}"`;
-
-    try {
-        execSync(openCmd, { stdio: "ignore" });
-    } catch (_) { }
+    openExternalUrl(editorUrl);
 }
 
 function resolveWebAppDeployment(cfg) {
@@ -351,7 +410,13 @@ function resolveWebAppDeployment(cfg) {
 
     try {
         console.log("🔍 Checking Web App deployments...");
-        const output = execSync("npx --quiet clasp deployments", { cwd: ROOT_DIR, encoding: "utf8" });
+        const probe = spawnBinSync("npx", ["--quiet", "clasp", "deployments"], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"]
+        });
+        if (probe.status !== 0) return null;
+
+        const output = String(probe.stdout || "");
         const matches = [...output.matchAll(/-\s+(AKfycb[a-zA-Z0-9_-]+)\s+@(\d+)/g)];
         if (matches.length > 0) {
             matches.sort((a, b) => Number(b[2]) - Number(a[2]));
@@ -373,7 +438,11 @@ function syncApiExecutableDeployment(cfg) {
     if (!apiDeploymentId) {
         try {
             console.log("🔍 Checking API Executable deployment...");
-            const output = execSync("npx --quiet clasp deployments", { cwd: ROOT_DIR, encoding: "utf8" });
+            const probe = spawnBinSync("npx", ["--quiet", "clasp", "deployments"], {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"]
+            });
+            const output = probe.status === 0 ? String(probe.stdout || "") : "";
             const candidates = [];
 
             for (const line of output.split(/\r?\n/)) {
@@ -409,19 +478,14 @@ function syncApiExecutableDeployment(cfg) {
         return;
     }
 
-    const isWin = process.platform === "win32";
-    const res = isWin
-        ? spawnSync(`npx --quiet clasp deploy -i ${apiDeploymentId} -d "API Executable"`, {
-            cwd: ROOT_DIR,
-            encoding: "utf8",
-            shell: true,
-            stdio: ["ignore", "pipe", "pipe"]
-        })
-        : spawnSync("npx", ["--quiet", "clasp", "deploy", "-i", apiDeploymentId, "-d", "API Executable"], {
-            cwd: ROOT_DIR,
+    const res = spawnBinSync(
+        "npx",
+        ["--quiet", "clasp", "deploy", "-i", apiDeploymentId, "-d", "API Executable"],
+        {
             encoding: "utf8",
             stdio: ["ignore", "pipe", "pipe"]
-        });
+        }
+    );
 
     const out = String(res.stdout || "").trim();
     const err = String(res.stderr || "").trim();
@@ -680,14 +744,7 @@ async function authorizeScopesFallback(creds, rcPath) {
             authUrl.searchParams.set("prompt", "consent");
 
             console.log(`🌐 Opening browser to grant Sheets & Drive scopes:\n${authUrl.toString()}`);
-            const openCmd = process.platform === "win32"
-                ? `start "" "${authUrl.toString()}"`
-                : process.platform === "darwin"
-                    ? `open "${authUrl.toString()}"`
-                    : `xdg-open "${authUrl.toString()}"`;
-            try {
-                execSync(openCmd, { stdio: "ignore" });
-            } catch (_) { }
+            openExternalUrl(authUrl.toString());
         });
     });
 }
@@ -907,12 +964,12 @@ async function setupRemoteCredentials(cfg, forceReauth = false) {
 
         console.log("📦 Syncing manifest scopes to Google Apps Script...");
         compileViews();
-        runClaspCommand("push -f");
+        runClaspArgs(["push", "-f"]);
         syncApiExecutableDeployment(cfg);
         console.log("✅ clasp authenticated with ./creds.json.");
     } else if (manifestUpdated) {
         compileViews();
-        runClaspCommand("push -f");
+        runClaspArgs(["push", "-f"]);
         syncApiExecutableDeployment(cfg);
     }
 
@@ -955,27 +1012,15 @@ function extractGasException(combinedText) {
 
 function tryClaspRun(fnName, payloadObj, verbose = false) {
     const hasPayload = payloadObj !== null && payloadObj !== undefined;
-    const isWin = process.platform === "win32";
+    const args = ["--quiet", "clasp", "run", fnName];
+    if (hasPayload) {
+        args.push("-p", JSON.stringify([payloadObj]));
+    }
 
-    const proc = isWin
-        ? spawnSync(
-            `npx --quiet clasp run ${fnName}${hasPayload ? ` -p "${JSON.stringify([payloadObj]).replace(/"/g, '\\"')}"` : ""}`,
-            {
-                cwd: ROOT_DIR,
-                encoding: "utf8",
-                shell: true,
-                stdio: ["ignore", "pipe", "pipe"]
-            }
-        )
-        : spawnSync(
-            "npx",
-            ["--quiet", "clasp", "run", fnName, ...(hasPayload ? ["-p", JSON.stringify([payloadObj])] : [])],
-            {
-                cwd: ROOT_DIR,
-                encoding: "utf8",
-                stdio: ["ignore", "pipe", "pipe"]
-            }
-        );
+    const proc = spawnBinSync("npx", args, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"]
+    });
 
     const stdout = String(proc.stdout || "").trim();
     const stderr = String(proc.stderr || "")
@@ -1166,14 +1211,34 @@ function printSeederSummary(seeder, label = "Remote Seeder") {
     return true;
 }
 
-function printSetupSummary(info, fallbackUrl) {
+function maskSecret(val) {
+    const str = String(val || "").trim();
+    if (!str) return "(Not set)";
+    if (str.length <= 12) return "********";
+    return `${str.slice(0, 10)}...${str.slice(-4)}`;
+}
+
+function printSetupSummary(info, fallbackUrl, showFreshGuide = true) {
     console.log("\n========================================================");
-    console.log("📋 SCRIPT PROPERTIES SUMMARY (INITIALIZED)");
+    console.log("📋 SCRIPT PROPERTIES SUMMARY");
     console.log("========================================================");
-    console.log(`SHEET_ID   : ${info.SHEET_ID || "(Not set)"}`);
+    console.log(`SHEET_ID   : ${info.SHEET_ID || "(Not set)"}${info.generated_sheet ? " (newly generated)" : ""}`);
     console.log(`BASE_URL   : ${info.BASE_URL || fallbackUrl || "(Not set)"}`);
+    console.log(`APP_KEY    : ${maskSecret(info.APP_KEY)}${info.generated_app_key ? " (newly generated)" : ""}`);
+    if (info.env_mode || info.sheet_mode) {
+        console.log(`Sync Policy: env=${info.env_mode || "merge"}, sheet=${info.sheet_mode || "keep"}`);
+    }
     if (info.SHEET_URL) {
         console.log(`Spreadsheet: ${info.SHEET_URL}`);
+    }
+    if (showFreshGuide) {
+        console.log("--------------------------------------------------------");
+        console.log("💡 Zero-Prompt Deploy (.env):");
+        console.log("   GAS_DEPLOY_ENV_SYNC=keep      # ask | keep | merge | overwrite");
+        console.log("   GAS_DEPLOY_SHEET_MODE=keep    # ask | keep | env | generate");
+        console.log("   GAS_DEPLOY_AUTO_KEY=true      # true | false");
+        console.log("💡 Fresh Deploy (new Spreadsheet + full .env overwrite):");
+        console.log("   gas deploy --fresh --migrate --seed");
     }
     console.log("========================================================\n");
 }
@@ -1191,8 +1256,8 @@ function printManualSetupReminder(webAppUrl) {
         console.log(`   ${webAppUrl}`);
     }
     console.log("--------------------------------------------------------");
-    console.log("💡 This reminder will not appear again on subsequent runs.");
-    console.log("   (Pass --setup to display it again)");
+    console.log("💡 For automated CLI sync & fresh deploys, configure 'gas creds' once,");
+    console.log("   then use: gas deploy --fresh --migrate --seed");
     console.log("========================================================\n");
 }
 
@@ -1200,10 +1265,11 @@ function generateAppKey() {
     return "base64:" + crypto.randomBytes(32).toString("base64");
 }
 
-function readEnvAppKey(envPath) {
+function readEnvKey(envPath, key) {
     if (!fs.existsSync(envPath)) return "";
     const content = fs.readFileSync(envPath, "utf8");
-    const match = content.match(/^\s*APP_KEY\s*=\s*(.*)\s*$/m);
+    const regex = new RegExp(`^\\s*${key}\\s*=\\s*(.*)\\s*$`, "m");
+    const match = content.match(regex);
     if (!match) return "";
     return match[1].trim().replace(/^["']|["']$/g, "");
 }
@@ -1233,12 +1299,15 @@ function upsertEnvKey(envPath, key, value) {
     fs.writeFileSync(envPath, lines.join("\n").replace(/\n*$/, "\n"), "utf8");
 }
 
-function buildEnvPayload(appKey) {
-    const localEnv = loadLocalEnv(path.join(ROOT_DIR, ".env"));
-    if (appKey && !localEnv.APP_KEY) {
-        return Object.assign({}, localEnv, { APP_KEY: appKey });
+function filterAppEnv(rawEnv) {
+    const filtered = {};
+    if (!rawEnv || typeof rawEnv !== "object") return filtered;
+    for (const [k, v] of Object.entries(rawEnv)) {
+        const cleanKey = String(k || "").trim();
+        if (!cleanKey || cleanKey.startsWith("GAS_DEPLOY_")) continue;
+        filtered[cleanKey] = v;
     }
-    return localEnv;
+    return filtered;
 }
 
 function resolveBaseUrl(envObj, fallbackUrl = "") {
@@ -1246,46 +1315,248 @@ function resolveBaseUrl(envObj, fallbackUrl = "") {
     return envBaseUrl || String(fallbackUrl || "").trim().replace(/\/+$/g, "");
 }
 
-async function ensureAppKeyOnFirstDeploy(cfg, remoteInfo = null) {
+function inspectRemoteWorkspace() {
+    const direct = tryClaspRun("inspectWorkspace", null, false);
+    if (direct && !direct.__gasException && typeof direct === "object" && direct.status) {
+        return direct;
+    }
+    const fallback = tryClaspRun("setupWorkspace", { dryRun: true }, false);
+    if (fallback && !fallback.__gasException && typeof fallback === "object" && fallback.status) {
+        return fallback;
+    }
+    return null;
+}
+
+function computeEnvDiff(appEnv, remoteProps) {
+    const protectedKeys = new Set(["SHEET_ID", "APP_KEY", "BASE_URL"]);
+    const added = [];
+    const changed = [];
+
+    for (const [key, rawVal] of Object.entries(appEnv)) {
+        if (protectedKeys.has(key)) continue;
+        const localVal = String(rawVal ?? "").trim();
+        if (localVal === "") continue;
+
+        const hasRemote = Object.prototype.hasOwnProperty.call(remoteProps, key) &&
+            String(remoteProps[key] ?? "").trim() !== "";
+        const remoteVal = hasRemote ? String(remoteProps[key]).trim() : "";
+
+        if (!hasRemote) {
+            added.push(key);
+        } else if (remoteVal !== localVal) {
+            changed.push(key);
+        }
+    }
+
+    return { added, changed };
+}
+
+async function resolveDeploySyncPlan(cfg, remoteState) {
     const envPath = path.join(ROOT_DIR, ".env");
-    const localEnv = loadLocalEnv(envPath);
+    const rawEnv = loadLocalEnv(envPath);
+    const appEnv = filterAppEnv(rawEnv);
 
-    const existingKey =
-        String(remoteInfo?.APP_KEY || "").trim() ||
-        String(cfg.appKey || "").trim() ||
-        String(localEnv.APP_KEY || "").trim() ||
-        readEnvAppKey(envPath);
+    const isFresh = hasFlag("--fresh");
+    const nonInteractive = hasFlag("--yes", "-y") || !process.stdin.isTTY || !process.stdout.isTTY;
 
-    if (existingKey) {
-        if (!cfg.appKey) {
-            cfg.appKey = existingKey;
+    const rawEnvSync = String(
+        getFlagValue("--env-sync") ||
+        rawEnv.GAS_DEPLOY_ENV_SYNC ||
+        (isFresh ? "overwrite" : "ask")
+    ).trim().toLowerCase();
+    const envSyncPolicy = ["ask", "keep", "merge", "overwrite"].includes(rawEnvSync)
+        ? rawEnvSync
+        : "ask";
+
+    const rawSheetMode = String(
+        getFlagValue("--sheet") ||
+        rawEnv.GAS_DEPLOY_SHEET_MODE ||
+        (isFresh ? "generate" : "ask")
+    ).trim().toLowerCase();
+    const sheetPolicy = ["ask", "keep", "env", "generate"].includes(rawSheetMode)
+        ? rawSheetMode
+        : "ask";
+
+    const autoKeyRaw = String(rawEnv.GAS_DEPLOY_AUTO_KEY || "true").trim().toLowerCase();
+    const autoGenerateKey = !["false", "0", "no", "off"].includes(autoKeyRaw);
+
+    const remoteProps = (remoteState && remoteState.properties && typeof remoteState.properties === "object")
+        ? remoteState.properties
+        : {};
+    const remoteExists = Boolean(remoteState && remoteState.exists);
+
+    const remoteAppKey = String(remoteProps.APP_KEY || "").trim();
+    const localAppKey = String(appEnv.APP_KEY || cfg.appKey || readEnvKey(envPath, "APP_KEY") || "").trim();
+    let resolvedAppKey = "";
+    let forceAppKey = false;
+
+    if (remoteAppKey) {
+        if (localAppKey && localAppKey !== remoteAppKey && (envSyncPolicy === "overwrite" || isFresh)) {
+            resolvedAppKey = localAppKey;
+            forceAppKey = true;
+            console.log("🔑 Overwriting Script Properties APP_KEY with local .env APP_KEY.");
+        } else {
+            resolvedAppKey = remoteAppKey;
+            if (!localAppKey) {
+                upsertEnvKey(envPath, "APP_KEY", remoteAppKey);
+                console.log("🔑 Synced existing Script Properties APP_KEY into local .env.");
+            } else if (localAppKey !== remoteAppKey) {
+                console.log("🛡️  Preserved existing Script Properties APP_KEY (differs from local .env).");
+            }
+            if (cfg.appKey !== remoteAppKey) {
+                cfg.appKey = remoteAppKey;
+                writeClaspConfig(cfg);
+            }
+        }
+    } else if (localAppKey) {
+        resolvedAppKey = localAppKey;
+        forceAppKey = true;
+        console.log("🔑 Queued local APP_KEY for Script Properties.");
+    } else if (autoGenerateKey || isFresh) {
+        resolvedAppKey = generateAppKey();
+        forceAppKey = true;
+        upsertEnvKey(envPath, "APP_KEY", resolvedAppKey);
+        cfg.appKey = resolvedAppKey;
+        writeClaspConfig(cfg);
+        console.log(`🔑 Auto-generated APP_KEY (${maskSecret(resolvedAppKey)}) and saved to .env.`);
+    } else if (!nonInteractive) {
+        console.log("\n🔐 APP_KEY is not defined in Script Properties or .env.");
+        const ans = await askQuestion("Generate a new APP_KEY now? [Y/n]: ");
+        if (!["n", "no"].includes(ans.toLowerCase())) {
+            resolvedAppKey = generateAppKey();
+            forceAppKey = true;
+            upsertEnvKey(envPath, "APP_KEY", resolvedAppKey);
+            cfg.appKey = resolvedAppKey;
             writeClaspConfig(cfg);
+            console.log(`🔑 Generated APP_KEY (${maskSecret(resolvedAppKey)}) and saved to .env.`);
         }
-        if (!localEnv.APP_KEY && !readEnvAppKey(envPath)) {
-            upsertEnvKey(envPath, "APP_KEY", existingKey);
+    }
+
+    if (resolvedAppKey) {
+        appEnv.APP_KEY = resolvedAppKey;
+    }
+
+    const remoteSheetId = String(remoteProps.SHEET_ID || "").trim();
+    const localSheetId = String(appEnv.SHEET_ID || readEnvKey(envPath, "SHEET_ID") || "").trim();
+    let sheetMode = "keep";
+    let customSheetId = "";
+
+    if (remoteSheetId) {
+        if (sheetPolicy === "ask" && !nonInteractive) {
+            console.log(`\n📄 SHEET_ID is already defined in Script Properties: ${remoteSheetId}`);
+            if (localSheetId && localSheetId !== remoteSheetId) {
+                console.log(`   (Local .env SHEET_ID is different: ${localSheetId})`);
+            }
+            console.log("   [1] Keep current Script Properties SHEET_ID (default)");
+            console.log("   [2] Change SHEET_ID (enter new ID or use .env value)");
+            console.log("   [3] Generate a brand new Google Spreadsheet");
+            const choice = await askQuestion("Select SHEET_ID option [1/2/3] (default: 1): ");
+
+            if (choice === "2") {
+                const hint = localSheetId ? ` [${localSheetId}]` : "";
+                const entered = await askQuestion(`Enter new SHEET_ID${hint}: `);
+                const chosenId = entered || localSheetId;
+                if (chosenId) {
+                    sheetMode = "custom";
+                    customSheetId = chosenId;
+                    upsertEnvKey(envPath, "SHEET_ID", chosenId);
+                    console.log(`📄 Will update SHEET_ID to: ${chosenId}`);
+                } else {
+                    console.log("⚠️  Empty SHEET_ID entered. Keeping existing Script Properties SHEET_ID.");
+                    sheetMode = "keep";
+                }
+            } else if (choice === "3") {
+                sheetMode = "generate";
+                console.log("📄 Will generate a brand new Google Spreadsheet.");
+            } else {
+                sheetMode = "keep";
+                console.log("🛡️  Keeping existing Script Properties SHEET_ID.");
+            }
+        } else if (sheetPolicy === "env") {
+            if (localSheetId) {
+                sheetMode = "env";
+                console.log(`📄 Updating SHEET_ID from .env: ${localSheetId}`);
+            } else {
+                sheetMode = "keep";
+                console.log("⚠️  GAS_DEPLOY_SHEET_MODE=env requested, but .env SHEET_ID is empty. Keeping existing SHEET_ID.");
+            }
+        } else if (sheetPolicy === "generate") {
+            sheetMode = "generate";
+            console.log("📄 Generating a brand new Google Spreadsheet (explicit policy).");
+        } else {
+            sheetMode = "keep";
+            console.log(`🛡️  Keeping existing Script Properties SHEET_ID (${remoteSheetId}).`);
         }
-        return existingKey;
+    } else if (localSheetId && sheetPolicy !== "generate") {
+        sheetMode = "env";
+        console.log(`📄 Using SHEET_ID from .env: ${localSheetId}`);
+    } else if (sheetPolicy === "ask" && !nonInteractive && !isFresh) {
+        console.log("\n📄 SHEET_ID is not defined yet in Script Properties or .env.");
+        console.log("   [1] Auto-generate a new Google Spreadsheet (default)");
+        console.log("   [2] Enter an existing Google Spreadsheet ID");
+        const choice = await askQuestion("Select SHEET_ID option [1/2] (default: 1): ");
+        if (choice === "2") {
+            const entered = await askQuestion("Enter existing SHEET_ID: ");
+            if (entered) {
+                sheetMode = "custom";
+                customSheetId = entered;
+                upsertEnvKey(envPath, "SHEET_ID", entered);
+            } else {
+                sheetMode = "generate";
+            }
+        } else {
+            sheetMode = "generate";
+        }
+    } else {
+        sheetMode = "generate";
     }
 
-    if (!process.stdin.isTTY || !process.stdout.isTTY) {
-        return "";
+    let envMode = "merge";
+    if (!remoteExists) {
+        envMode = "overwrite";
+    } else if (envSyncPolicy === "ask") {
+        const diff = computeEnvDiff(appEnv, remoteProps);
+        if (diff.added.length === 0 && diff.changed.length === 0) {
+            envMode = "keep";
+            console.log("✅ Script Properties are already in sync with .env.");
+        } else if (!nonInteractive) {
+            console.log("\n⚙️  Script Properties already exist on GAS:");
+            if (diff.added.length > 0) {
+                console.log(`   + New keys in .env      : ${diff.added.join(", ")}`);
+            }
+            if (diff.changed.length > 0) {
+                console.log(`   ~ Modified keys in .env : ${diff.changed.join(", ")}`);
+            }
+            console.log("   [1] keep      - Keep existing Script Properties, only add missing keys (default)");
+            console.log("   [2] merge     - Update modified keys from .env (respects SHEET_ID & APP_KEY rules)");
+            console.log("   [3] overwrite - Overwrite all keys from .env");
+            const modeChoice = await askQuestion("Update Script Properties? [1/2/3] (default: 1): ");
+            if (modeChoice === "2" || modeChoice.toLowerCase() === "merge") {
+                envMode = "merge";
+            } else if (modeChoice === "3" || modeChoice.toLowerCase() === "overwrite") {
+                envMode = "overwrite";
+            } else {
+                envMode = "keep";
+            }
+        } else {
+            envMode = "keep";
+            console.log("🛡️  Non-interactive mode: keeping existing Script Properties (set GAS_DEPLOY_ENV_SYNC=merge to update).");
+        }
+    } else {
+        envMode = envSyncPolicy;
+        console.log(`⚙️  Applying explicit Script Properties sync mode: ${envMode}`);
     }
 
-    console.log("\n🔐 APP_KEY is not registered yet (used for CSRF token encryption/signing).");
-    const answer = await askQuestion("Generate a new APP_KEY and assign it to Script Properties now? [Y/n]: ");
-    const normalized = answer.toLowerCase();
-
-    if (normalized === "n" || normalized === "no") {
-        console.log("⏭️  Skipped APP_KEY generation.");
-        return "";
-    }
-
-    const newKey = generateAppKey();
-    upsertEnvKey(envPath, "APP_KEY", newKey);
-    cfg.appKey = newKey;
-    writeClaspConfig(cfg);
-    console.log("✅ Generated APP_KEY, saved to .env, and queued for Script Properties.");
-    return newKey;
+    return {
+        appEnv,
+        envMode,
+        sheetMode,
+        customSheetId,
+        appKey: resolvedAppKey,
+        forceAppKey,
+        autoGenerateKey,
+        fresh: isFresh
+    };
 }
 
 async function generateAppKeyCommand() {
@@ -1293,7 +1564,7 @@ async function generateAppKeyCommand() {
     const cfg = hasClasp ? readClaspConfig() : {};
     const isForce = flags.includes("-f") || flags.includes("--force");
     const envPath = path.join(ROOT_DIR, ".env");
-    const existing = String(cfg.appKey || "").trim() || readEnvAppKey(envPath);
+    const existing = String(cfg.appKey || "").trim() || readEnvKey(envPath, "APP_KEY");
 
     if (existing && !isForce) {
         console.log("ℹ️  APP_KEY is already configured. Pass --force to generate and overwrite with a new key.");
@@ -1312,12 +1583,17 @@ async function generateAppKeyCommand() {
     console.log("📄 Saved to .env" + (hasClasp ? " and .clasp.json." : "."));
 
     if (hasClasp) {
-        const envWithKey = buildEnvPayload(newKey);
+        const appEnv = filterAppEnv(loadLocalEnv(envPath));
+        appEnv.APP_KEY = newKey;
         const syncRes = tryClaspRun("setupWorkspace", {
-            env: envWithKey,
+            env: appEnv,
+            envMode: "keep",
+            sheetMode: "keep",
+            appKey: newKey,
+            forceAppKey: true,
             migrate: false,
             seed: false,
-            webAppUrl: resolveBaseUrl(envWithKey, cfg.webAppUrl || "")
+            webAppUrl: resolveBaseUrl(appEnv, cfg.webAppUrl || "")
         });
         if (syncRes && !syncRes.__gasException && syncRes.status) {
             console.log("☁️  Synced APP_KEY to GAS Script Properties.");
@@ -1329,35 +1605,53 @@ async function generateAppKeyCommand() {
 
 async function pushAndSyncGas() {
     const cfg = readClaspConfig();
-    const forceFlag = flags.includes("-f") || flags.includes("--force") ? " -f" : "";
+    const isForce = flags.includes("-f") || flags.includes("--force");
     const shouldSeed = flags.includes("--seed");
     const showSetup = flags.includes("--setup");
 
-    const appKey = await ensureAppKeyOnFirstDeploy(cfg, null);
-    const envWithKey = buildEnvPayload(appKey);
-    const baseUrl = resolveBaseUrl(envWithKey, cfg.webAppUrl || "");
-
     compileViews();
-    runClaspCommand(`push${forceFlag}`);
+    runClaspArgs(isForce ? ["push", "-f"] : ["push"]);
     syncApiExecutableDeployment(cfg);
 
+    const remoteState = inspectRemoteWorkspace();
+    const plan = await resolveDeploySyncPlan(cfg, remoteState);
+    const baseUrl = resolveBaseUrl(plan.appEnv, cfg.webAppUrl || "");
+
     const remoteRes = tryClaspRun("setupWorkspace", {
-        env: envWithKey,
+        env: plan.appEnv,
+        envMode: plan.envMode,
+        sheetMode: plan.sheetMode,
+        customSheetId: plan.customSheetId,
+        appKey: plan.appKey,
+        forceAppKey: plan.forceAppKey,
+        autoGenerateKey: plan.autoGenerateKey,
+        fresh: plan.fresh,
         migrate: true,
         seed: shouldSeed,
         webAppUrl: baseUrl
     });
 
     if (remoteRes && !remoteRes.__gasException && remoteRes.status) {
+        const envPath = path.join(ROOT_DIR, ".env");
+        if (remoteRes.SHEET_ID && (remoteRes.generated_sheet || !readEnvKey(envPath, "SHEET_ID"))) {
+            upsertEnvKey(envPath, "SHEET_ID", remoteRes.SHEET_ID);
+        }
+        if (remoteRes.APP_KEY && (remoteRes.generated_app_key || !readEnvKey(envPath, "APP_KEY"))) {
+            upsertEnvKey(envPath, "APP_KEY", remoteRes.APP_KEY);
+        }
+        if (remoteRes.APP_KEY) {
+            cfg.appKey = remoteRes.APP_KEY;
+        }
+        cfg.initialized = true;
+        writeClaspConfig(cfg);
+
         printRemoteMigration(remoteRes.migration);
         if (shouldSeed) {
             printSeederSummary(remoteRes.seeder, "Remote Seeder");
         }
-        if (remoteRes.first_setup || !remoteRes.SHEET_ID || showSetup) {
-            printSetupSummary(remoteRes, baseUrl);
+        if (remoteRes.first_setup || remoteRes.generated_sheet || remoteRes.generated_app_key || showSetup) {
+            printSetupSummary(remoteRes, baseUrl, true);
         }
-        cfg.initialized = true;
-        writeClaspConfig(cfg);
         return;
     }
 
@@ -1370,7 +1664,7 @@ async function pushAndSyncGas() {
 
 async function deployGasWebApp(description) {
     const cfg = readClaspConfig();
-    const desc = (description || "Deploy via GAS CLI").replace(/"/g, "");
+    const desc = (description || "Deploy via GAS CLI").trim();
     const showSetup = flags.includes("--setup");
     const shouldMigrate = flags.includes("--migrate");
     const shouldSeed = flags.includes("--seed");
@@ -1380,32 +1674,36 @@ async function deployGasWebApp(description) {
         if (!ready) process.exit(1);
     }
 
-    const appKey = await ensureAppKeyOnFirstDeploy(cfg, null);
-    const envWithKey = buildEnvPayload(appKey);
-
     console.log("📦 Pushing latest code to Google Apps Script...");
     compileViews();
-    runClaspCommand("push -f");
+    runClaspArgs(["push", "-f"]);
 
     const existing = resolveWebAppDeployment(cfg);
-    const deployCmd = existing
-        ? `deploy -i ${existing.deploymentId} -d "${desc}"`
-        : `deploy -d "${desc}"`;
+    const deployArgs = existing
+        ? ["clasp", "deploy", "-i", existing.deploymentId, "-d", desc]
+        : ["clasp", "deploy", "-d", desc];
 
     console.log(existing
         ? `🔄 Updating Web App deployment (${existing.deploymentId})...`
         : "🚀 Creating new Web App deployment...");
 
     let deploymentId = existing?.deploymentId || "";
-    try {
-        const out = execSync(`npx clasp ${deployCmd}`, { cwd: ROOT_DIR, encoding: "utf8" });
-        process.stdout.write(out);
+    const deployProc = spawnBinSync("npx", deployArgs, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"]
+    });
 
-        const match = out.match(/(AKfycb[a-zA-Z0-9_-]+)/);
-        if (match) deploymentId = match[1];
-    } catch (err) {
-        process.exit(err.status || 1);
+    const out = String(deployProc.stdout || "");
+    const err = String(deployProc.stderr || "");
+    if (out) process.stdout.write(out);
+    if (err) process.stderr.write(err);
+
+    if (deployProc.status !== 0) {
+        process.exit(deployProc.status || 1);
     }
+
+    const match = `${out}\n${err}`.match(/(AKfycb[a-zA-Z0-9_-]+)/);
+    if (match) deploymentId = match[1];
 
     if (!deploymentId) {
         console.error("❌ Failed to retrieve Deployment ID from clasp output.");
@@ -1413,22 +1711,33 @@ async function deployGasWebApp(description) {
     }
 
     const webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec`;
-    const baseUrl = resolveBaseUrl(envWithKey, webAppUrl);
     cfg.deploymentId = deploymentId;
     cfg.webAppUrl = webAppUrl;
     writeClaspConfig(cfg);
     console.log(`🌐 Web App URL: ${webAppUrl}`);
+
+    syncApiExecutableDeployment(cfg);
+
+    const remoteState = inspectRemoteWorkspace();
+    const plan = await resolveDeploySyncPlan(cfg, remoteState);
+    const baseUrl = resolveBaseUrl(plan.appEnv, webAppUrl);
+
     if (baseUrl !== webAppUrl) {
         console.log(`🔗 Base URL   : ${baseUrl}`);
     }
-
-    syncApiExecutableDeployment(cfg);
 
     const bootRes = tryClaspRun(
         "setupWorkspace",
         {
             webAppUrl: baseUrl,
-            env: envWithKey,
+            env: plan.appEnv,
+            envMode: plan.envMode,
+            sheetMode: plan.sheetMode,
+            customSheetId: plan.customSheetId,
+            appKey: plan.appKey,
+            forceAppKey: plan.forceAppKey,
+            autoGenerateKey: plan.autoGenerateKey,
+            fresh: plan.fresh,
             migrate: shouldMigrate,
             seed: shouldSeed
         },
@@ -1440,17 +1749,26 @@ async function deployGasWebApp(description) {
     }
 
     if (bootRes && bootRes.status) {
+        const envPath = path.join(ROOT_DIR, ".env");
+        if (bootRes.SHEET_ID && (bootRes.generated_sheet || !readEnvKey(envPath, "SHEET_ID"))) {
+            upsertEnvKey(envPath, "SHEET_ID", bootRes.SHEET_ID);
+        }
+        if (bootRes.APP_KEY && (bootRes.generated_app_key || !readEnvKey(envPath, "APP_KEY"))) {
+            upsertEnvKey(envPath, "APP_KEY", bootRes.APP_KEY);
+        }
+        if (bootRes.APP_KEY) {
+            cfg.appKey = bootRes.APP_KEY;
+        }
+        cfg.initialized = true;
+        writeClaspConfig(cfg);
+
         if (shouldMigrate) {
             printRemoteMigration(bootRes.migration);
         }
         if (shouldSeed) {
             printSeederSummary(bootRes.seeder, "Remote Seeder");
         }
-        if (bootRes.first_setup || !bootRes.SHEET_ID || showSetup) {
-            printSetupSummary(bootRes, baseUrl);
-        }
-        cfg.initialized = true;
-        writeClaspConfig(cfg);
+        printSetupSummary(bootRes, baseUrl, true);
         return;
     }
 
@@ -1615,55 +1933,149 @@ function createController(rawName, modeFlag) {
 
     const baseName = className.replace(/Controller$/, "");
     const snakeBase = toSnakeCase(baseName);
-    const sheetName = pluralizeSnake(snakeBase);
-    const viewName = snakeBase;
-    const mode = String(modeFlag || "--web").toLowerCase();
-    const modelExists = fs.existsSync(path.join(SRC_DIR, "app", "Models", `${baseName}.js`));
-    const sourceLine = modelExists ? `    model = ${baseName};` : `    sheet = "${sheetName}";`;
+    const viewFolder = pluralizeSnake(snakeBase);
+    const mode = String(modeFlag || "--plain").toLowerCase();
 
     let content = "";
 
-    if (mode === "--api" || mode === "--resource" || mode === "-r") {
+    if (mode === "--resource" || mode === "-r") {
         content = `class ${className} extends Controller {
-${sourceLine}
-    with = [];
-}
-`;
-    } else if (mode === "--hybrid") {
-        content = `class ${className} extends Controller {
-${sourceLine}
-    with = [];
+    index(request) {
+        if (request.wantsJson()) {
+            return ${baseName}.datatable(request);
+        }
 
-    index(ctx) {
-        const res = super.index(ctx);
-        if (ctx.wantsJson()) return res;
-
-        return view("${viewName}.index", {
-            items: res.data || [],
-            meta: res.meta || null
+        return view("${viewFolder}.index", {
+            items: ${baseName}.all()
         });
     }
 
-    show(ctx) {
-        const res = super.show(ctx);
-        if (ctx.wantsJson()) return res;
-        if (!res.status) {
-            return failResponse(res.message || "${baseName} not found.", res.code || 404);
+    create(request) {
+        return view("${viewFolder}.create");
+    }
+
+    store(request) {
+        var data = request.only(["name"]);
+        var validation = Validator.make(data, {
+            name: "required|string|max:255"
+        });
+        if (validation.fails()) {
+            return failResponse("Validation failed.", 422, { errors: validation.errors() });
         }
 
-        return view("${viewName}.show", {
-            item: res.data
+        return ${baseName}.create(data);
+    }
+
+    show(request, id) {
+        var item = ${baseName}.find(id);
+        if (!item) {
+            return failResponse("${baseName} not found.", 404);
+        }
+
+        if (request.wantsJson()) {
+            return { status: true, code: 200, data: item };
+        }
+
+        return view("${viewFolder}.show", {
+            item: item
         });
+    }
+
+    edit(request, id) {
+        var item = ${baseName}.find(id);
+        if (!item) {
+            return failResponse("${baseName} not found.", 404);
+        }
+
+        return view("${viewFolder}.edit", {
+            item: item
+        });
+    }
+
+    update(request, id) {
+        var item = ${baseName}.find(id);
+        if (!item) {
+            return failResponse("${baseName} not found.", 404);
+        }
+
+        var data = request.only(["name"]);
+        var validation = Validator.make(data, {
+            name: "required|string|max:255"
+        });
+        if (validation.fails()) {
+            return failResponse("Validation failed.", 422, { errors: validation.errors() });
+        }
+
+        return item.update(data);
+    }
+
+    destroy(request, id) {
+        var item = ${baseName}.find(id);
+        if (!item) {
+            return failResponse("${baseName} not found.", 404);
+        }
+
+        return item.delete();
+    }
+}
+`;
+    } else if (mode === "--api") {
+        content = `class ${className} extends Controller {
+    index(request) {
+        return ${baseName}.datatable(request);
+    }
+
+    store(request) {
+        var data = request.only(["name"]);
+        var validation = Validator.make(data, {
+            name: "required|string|max:255"
+        });
+        if (validation.fails()) {
+            return failResponse("Validation failed.", 422, { errors: validation.errors() });
+        }
+
+        return ${baseName}.create(data);
+    }
+
+    show(request, id) {
+        var item = ${baseName}.find(id);
+        if (!item) {
+            return failResponse("${baseName} not found.", 404);
+        }
+
+        return { status: true, code: 200, data: item };
+    }
+
+    update(request, id) {
+        var item = ${baseName}.find(id);
+        if (!item) {
+            return failResponse("${baseName} not found.", 404);
+        }
+
+        var data = request.only(["name"]);
+        var validation = Validator.make(data, {
+            name: "required|string|max:255"
+        });
+        if (validation.fails()) {
+            return failResponse("Validation failed.", 422, { errors: validation.errors() });
+        }
+
+        return item.update(data);
+    }
+
+    destroy(request, id) {
+        var item = ${baseName}.find(id);
+        if (!item) {
+            return failResponse("${baseName} not found.", 404);
+        }
+
+        return item.delete();
     }
 }
 `;
     } else {
         content = `class ${className} extends Controller {
-    index(ctx) {
-        return view("${viewName}", {
-            title: "${baseName}"
-        });
-    }
+    //
 }
 `;
     }
@@ -1678,16 +2090,16 @@ function createSeeder(rawName) {
 
     const content = `Seeder.register("${seederName}", {
     run: function () {
-        var records = [
+        const records = [
             // { name: "Sample Record" }
         ];
 
-        for (var i = 0; i < records.length; i++) {
-            var res = create("${tableName}", { data: records[i] });
-            if (!res.status) throw new Error(res.message);
+        const res = ${entity}.bulkCreate(records);
+        if (!res || !res.status) {
+            throw new Error("Failed to seed ${tableName}: " + (res ? res.message : "Unknown error"));
         }
 
-        return { table: "${tableName}", count: records.length };
+        return { table: "${tableName}", count: res.count };
     }
 });
 `;
@@ -1715,7 +2127,7 @@ function createView(rawName) {
 
 function compileViews() {
     const viewsRoot = path.join(SRC_DIR, "resources", "views");
-    const outFile = path.join(SRC_DIR, "core", "Core_Views_Compiled.js");
+    const outFile = path.join(SRC_DIR, "core", "CompiledViews.js");
     const lines = [
         "// AUTO-GENERATED BY `gas push` / `gas view:compile` — DO NOT EDIT MANUALLY",
         "(function () {"
@@ -1746,14 +2158,14 @@ function compileViews() {
     lines.push("})();");
     lines.push("");
     fs.writeFileSync(outFile, lines.join("\n"), "utf8");
-    console.log(`✅ Compiled ${compiledCount} view(s) -> src/core/Core_Views_Compiled.js`);
+    console.log(`✅ Compiled ${compiledCount} view(s) -> src/core/CompiledViews.js`);
 }
 
 function listRoutes() {
     bootGasRuntime();
 
     if (!global.Route || typeof global.Route.list !== "function") {
-        console.error("❌ Route.list() is not available. Add Route.list() to src/core/Core_Router.js first.");
+        console.error("❌ Route.list() is not available. Add Route.list() to src/core/Router.js first.");
         process.exit(1);
     }
 
@@ -1927,9 +2339,17 @@ function resolveRemoteSourceRef(remoteName, branchOrTag, repoUrl, skipFetch = fa
 
     if (!remotes.includes(remoteName)) {
         console.log(`➕ Adding remote '${remoteName}' -> ${repoUrl}`);
-        execSync(`git remote add ${remoteName} ${repoUrl}`, { cwd: ROOT_DIR, stdio: "inherit" });
+        const addRes = spawnSync("git", ["remote", "add", remoteName, repoUrl], {
+            cwd: ROOT_DIR,
+            stdio: "inherit"
+        });
+        if (addRes.status !== 0) process.exit(addRes.status || 1);
     } else if (getFlagValue("--repo")) {
-        execSync(`git remote set-url ${remoteName} ${repoUrl}`, { cwd: ROOT_DIR, stdio: "inherit" });
+        const setRes = spawnSync("git", ["remote", "set-url", remoteName, repoUrl], {
+            cwd: ROOT_DIR,
+            stdio: "inherit"
+        });
+        if (setRes.status !== 0) process.exit(setRes.status || 1);
     }
 
     const remoteBranchRef = `refs/remotes/${remoteName}/${branchOrTag}`;
@@ -2031,6 +2451,23 @@ function mergeIgnoreFileFromRef(ref, relPath) {
     console.log(`🔄 Merged ${newRules.length} new rule(s) into ${relPath}: ${newRules.join(", ")}`);
 }
 
+function preserveCodeGeneratorTarget(previousSource) {
+    if (!previousSource) return;
+    const targetPath = path.join(SRC_DIR, "tools", "CodeGenerator.js");
+    if (!fs.existsSync(targetPath)) return;
+
+    const prevMatch = previousSource.match(/var\s+GENERATOR_TARGET\s*=\s*\{[\s\S]*?\n\};/);
+    if (!prevMatch) return;
+
+    const currentSource = fs.readFileSync(targetPath, "utf8");
+    if (!/var\s+GENERATOR_TARGET\s*=\s*\{[\s\S]*?\n\};/.test(currentSource)) return;
+
+    const updatedSource = currentSource.replace(/var\s+GENERATOR_TARGET\s*=\s*\{[\s\S]*?\n\};/, prevMatch[0]);
+    if (updatedSource !== currentSource) {
+        fs.writeFileSync(targetPath, updatedSource, "utf8");
+    }
+}
+
 function syncClaspConfigAfterUpdate() {
     if (!fs.existsSync(CLASP_FILE)) return;
     try {
@@ -2038,7 +2475,8 @@ function syncClaspConfigAfterUpdate() {
         let changed = false;
 
         const existingOrder = Array.isArray(cfg.filePushOrder) ? cfg.filePushOrder : [];
-        const mergedOrder = Array.from(new Set([...DEFAULT_FILE_PUSH_ORDER, ...existingOrder]));
+        const filteredExisting = existingOrder.filter((item) => !LEGACY_CORE_FILES.has(item));
+        const mergedOrder = Array.from(new Set([...DEFAULT_FILE_PUSH_ORDER, ...filteredExisting]));
         if (JSON.stringify(existingOrder) !== JSON.stringify(mergedOrder)) {
             cfg.filePushOrder = mergedOrder;
             changed = true;
@@ -2063,24 +2501,31 @@ function syncClaspConfigAfterUpdate() {
             writeClaspConfig(cfg);
             console.log("🔄 Merged configuration & 'filePushOrder' in .clasp.json.");
         }
-    } catch (_) { }
+    } catch (err) {
+        console.warn(`⚠️  Could not merge .clasp.json: ${err.message}`);
+    }
 }
 
-function syncPackageVersionFromRef(ref) {
+function syncPackageJsonFromRef(ref) {
     const remotePkg = readGitJsonFile(ref, "package.json");
     const localPkgPath = path.join(ROOT_DIR, "package.json");
 
     if (!remotePkg || !fs.existsSync(localPkgPath)) {
-        return remotePkg;
+        return { remotePkg, needsNpmInstall: false };
     }
+
+    let needsNpmInstall = false;
 
     try {
         const localPkg = JSON.parse(fs.readFileSync(localPkgPath, "utf8"));
+        const headPkg = readGitJsonFile("HEAD", "package.json") || {};
+        const changes = [];
+        const depChanges = [];
+
         if (remotePkg.version && localPkg.version !== remotePkg.version) {
             const prevVersion = localPkg.version || "(none)";
             localPkg.version = remotePkg.version;
-            fs.writeFileSync(localPkgPath, JSON.stringify(localPkg, null, 2) + "\n", "utf8");
-            console.log(`🔄 Updated package.json version: ${prevVersion} -> ${remotePkg.version}`);
+            changes.push(`version: ${prevVersion} -> ${remotePkg.version}`);
 
             const localLockPath = path.join(ROOT_DIR, "package-lock.json");
             if (fs.existsSync(localLockPath)) {
@@ -2099,14 +2544,317 @@ function syncPackageVersionFromRef(ref) {
 
                     if (lockChanged) {
                         fs.writeFileSync(localLockPath, JSON.stringify(localLock, null, 2) + "\n", "utf8");
-                        console.log(`🔄 Synced package-lock.json version -> ${remotePkg.version}`);
+                        changes.push(`package-lock.json version -> ${remotePkg.version}`);
                     }
                 } catch (_) { }
             }
         }
-    } catch (_) { }
 
-    return remotePkg;
+        if (remotePkg.scripts && typeof remotePkg.scripts === "object") {
+            if (!localPkg.scripts || typeof localPkg.scripts !== "object") {
+                localPkg.scripts = {};
+            }
+            const headScripts = (headPkg.scripts && typeof headPkg.scripts === "object") ? headPkg.scripts : {};
+
+            for (const [key, remoteVal] of Object.entries(remotePkg.scripts)) {
+                const localVal = localPkg.scripts[key];
+                const headVal = headScripts[key];
+
+                if (localVal === undefined) {
+                    localPkg.scripts[key] = remoteVal;
+                    changes.push(`scripts.${key} (added)`);
+                } else if (localVal !== remoteVal && (headVal === undefined || localVal === headVal)) {
+                    localPkg.scripts[key] = remoteVal;
+                    changes.push(`scripts.${key} (updated)`);
+                } else if (
+                    key === "postinstall" &&
+                    typeof localVal === "string" &&
+                    typeof remoteVal === "string" &&
+                    !localVal.includes(remoteVal)
+                ) {
+                    localPkg.scripts[key] = `${localVal} && ${remoteVal}`;
+                    changes.push(`scripts.${key} (appended)`);
+                }
+            }
+        }
+
+        if (remotePkg.bin && typeof remotePkg.bin === "object") {
+            if (!localPkg.bin || typeof localPkg.bin !== "object") {
+                localPkg.bin = {};
+            }
+            const headBin = (headPkg.bin && typeof headPkg.bin === "object") ? headBin : {};
+
+            for (const [key, remoteVal] of Object.entries(remotePkg.bin)) {
+                const localVal = localPkg.bin[key];
+                const headVal = headBin[key];
+
+                if (localVal === undefined) {
+                    localPkg.bin[key] = remoteVal;
+                    changes.push(`bin.${key} (added)`);
+                } else if (localVal !== remoteVal && (headVal === undefined || localVal === headVal)) {
+                    localPkg.bin[key] = remoteVal;
+                    changes.push(`bin.${key} (updated)`);
+                }
+            }
+        }
+
+        for (const section of ["dependencies", "devDependencies"]) {
+            const remoteDeps = (remotePkg[section] && typeof remotePkg[section] === "object")
+                ? remotePkg[section]
+                : null;
+            if (!remoteDeps) continue;
+
+            if (!localPkg[section] || typeof localPkg[section] !== "object") {
+                localPkg[section] = {};
+            }
+            const headDeps = (headPkg[section] && typeof headPkg[section] === "object")
+                ? headPkg[section]
+                : {};
+
+            for (const [pkgName, remoteVer] of Object.entries(remoteDeps)) {
+                const localVer = localPkg[section][pkgName];
+                const headVer = headDeps[pkgName];
+                const changedInFramework = remoteVer !== headVer;
+
+                if (!changedInFramework) continue;
+
+                if (localVer === undefined) {
+                    localPkg[section][pkgName] = remoteVer;
+                    depChanges.push(`${pkgName}: (none) -> ${remoteVer}`);
+                    needsNpmInstall = true;
+                } else if (localVer !== remoteVer && (headVer === undefined || localVer === headVer)) {
+                    localPkg[section][pkgName] = remoteVer;
+                    depChanges.push(`${pkgName}: ${localVer} -> ${remoteVer}`);
+                    needsNpmInstall = true;
+                }
+            }
+        }
+
+        if (changes.length > 0 || depChanges.length > 0) {
+            fs.writeFileSync(localPkgPath, JSON.stringify(localPkg, null, 2) + "\n", "utf8");
+        }
+
+        if (changes.length > 0) {
+            console.log(`🔄 Merged package.json: ${changes.join(", ")}`);
+        }
+
+        if (depChanges.length > 0) {
+            console.log("📦 Framework dependency updates applied (user packages preserved):");
+            depChanges.forEach((item) => console.log(`   - ${item}`));
+        }
+    } catch (err) {
+        console.warn(`⚠️  Could not smart-merge package.json: ${err.message}`);
+    }
+
+    return { remotePkg, needsNpmInstall };
+}
+
+function getMergeBaseRef(sourceRef) {
+    const res = spawnSync("git", ["merge-base", "HEAD", sourceRef], {
+        cwd: ROOT_DIR,
+        encoding: "utf8"
+    });
+    if (res.status !== 0) return null;
+    return String(res.stdout || "").trim() || null;
+}
+
+function isPlainObject(val) {
+    return val !== null && typeof val === "object" && !Array.isArray(val);
+}
+
+function deepEqualJson(a, b) {
+    if (a === b) return true;
+    if (Array.isArray(a) && Array.isArray(b)) {
+        if (a.length !== b.length) return false;
+        return a.every((item, idx) => deepEqualJson(item, b[idx]));
+    }
+    if (isPlainObject(a) && isPlainObject(b)) {
+        const keysA = Object.keys(a);
+        const keysB = Object.keys(b);
+        if (keysA.length !== keysB.length) return false;
+        return keysA.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEqualJson(a[k], b[k]));
+    }
+    return false;
+}
+
+function mergeStringArrayThreeWay(baseArr, localArr, upstreamArr, hasCommonBase) {
+    const base = Array.isArray(baseArr) ? baseArr : [];
+    const local = Array.isArray(localArr) ? localArr : [];
+    const upstream = Array.isArray(upstreamArr) ? upstreamArr : [];
+
+    const baseSet = new Set(base);
+    const localSet = new Set(local);
+
+    if (hasCommonBase) {
+        const result = upstream.filter((item) => !(baseSet.has(item) && !localSet.has(item)));
+        const resultSet = new Set(result);
+        for (const item of local) {
+            if (!baseSet.has(item) && !resultSet.has(item)) {
+                result.push(item);
+                resultSet.add(item);
+            }
+        }
+        return result;
+    }
+
+    const removedUncommitted = new Set(base.filter((item) => !localSet.has(item)));
+    const merged = [];
+    const seen = new Set();
+
+    for (const item of [...upstream, ...local]) {
+        if (removedUncommitted.has(item) || seen.has(item)) continue;
+        seen.add(item);
+        merged.push(item);
+    }
+    return merged;
+}
+
+function mergeObjectArrayByKey(baseArr, localArr, upstreamArr, keyCandidates, hasCommonBase) {
+    const base = Array.isArray(baseArr) ? baseArr : [];
+    const local = Array.isArray(localArr) ? localArr : [];
+    const upstream = Array.isArray(upstreamArr) ? upstreamArr : [];
+
+    const getKey = (obj) => {
+        if (!isPlainObject(obj)) return null;
+        for (const k of keyCandidates) {
+            if (obj[k] !== undefined && obj[k] !== null) return `${k}:${obj[k]}`;
+        }
+        return null;
+    };
+
+    const toMap = (arr) => {
+        const map = new Map();
+        arr.forEach((item, i) => map.set(getKey(item) || `__idx_${i}`, item));
+        return map;
+    };
+
+    const baseMap = toMap(base);
+    const localMap = toMap(local);
+    const upstreamMap = toMap(upstream);
+
+    const allKeys = new Set([...upstreamMap.keys(), ...localMap.keys()]);
+    const result = [];
+
+    for (const key of allKeys) {
+        const hasBase = baseMap.has(key);
+        const hasLocal = localMap.has(key);
+        const hasUp = upstreamMap.has(key);
+
+        if (hasCommonBase && hasBase && !hasLocal) continue;
+        if (!hasCommonBase && hasBase && !hasLocal && hasUp) continue;
+
+        if (hasLocal && hasUp) {
+            result.push(
+                threeWayMergeJson(baseMap.get(key), localMap.get(key), upstreamMap.get(key), key, hasCommonBase)
+            );
+        } else if (hasLocal) {
+            result.push(localMap.get(key));
+        } else {
+            result.push(upstreamMap.get(key));
+        }
+    }
+    return result;
+}
+
+function threeWayMergeJson(base, local, upstream, fieldName = "", hasCommonBase = true) {
+    if (deepEqualJson(local, upstream)) return local;
+
+    if (Array.isArray(local) || Array.isArray(upstream)) {
+        const sample = (Array.isArray(local) && local[0]) || (Array.isArray(upstream) && upstream[0]);
+        if (typeof sample === "string" || fieldName === "oauthScopes" || fieldName === "urlFetchWhitelist") {
+            return mergeStringArrayThreeWay(base, local, upstream, hasCommonBase);
+        }
+        if (isPlainObject(sample)) {
+            return mergeObjectArrayByKey(
+                base,
+                local,
+                upstream,
+                ["libraryId", "serviceId", "userSymbol", "name"],
+                hasCommonBase
+            );
+        }
+        return local !== undefined ? local : upstream;
+    }
+
+    if (isPlainObject(local) && isPlainObject(upstream)) {
+        const baseObj = isPlainObject(base) ? base : {};
+        const keys = new Set([...Object.keys(baseObj), ...Object.keys(local), ...Object.keys(upstream)]);
+        const merged = {};
+
+        for (const key of keys) {
+            const inBase = Object.prototype.hasOwnProperty.call(baseObj, key);
+            const inLocal = Object.prototype.hasOwnProperty.call(local, key);
+            const inUp = Object.prototype.hasOwnProperty.call(upstream, key);
+
+            if (inLocal && inUp) {
+                merged[key] = threeWayMergeJson(baseObj[key], local[key], upstream[key], key, hasCommonBase);
+            } else if (inLocal && !inUp) {
+                if (hasCommonBase && inBase && deepEqualJson(local[key], baseObj[key])) continue;
+                merged[key] = local[key];
+            } else if (!inLocal && inUp) {
+                if (hasCommonBase && inBase && deepEqualJson(upstream[key], baseObj[key])) continue;
+                merged[key] = upstream[key];
+            }
+        }
+        return merged;
+    }
+
+    if (hasCommonBase) {
+        if (deepEqualJson(local, base)) return upstream;
+        if (deepEqualJson(upstream, base)) return local;
+        console.log(`ℹ️  [manifest] Conflict on "${fieldName}": keeping local (${JSON.stringify(local)}) over upstream (${JSON.stringify(upstream)}).`);
+        return local;
+    }
+
+    if (base !== undefined && !deepEqualJson(local, base)) return local;
+    return local !== undefined ? local : upstream;
+}
+
+function mergeAppsScriptManifestFromRef(sourceRef) {
+    const manifestRelPath = "src/appsscript.json";
+    const manifestFullPath = path.join(SRC_DIR, "appsscript.json");
+
+    const upstreamManifest = readGitJsonFile(sourceRef, manifestRelPath);
+    if (!upstreamManifest) return false;
+
+    if (!fs.existsSync(manifestFullPath)) {
+        fs.mkdirSync(path.dirname(manifestFullPath), { recursive: true });
+        fs.writeFileSync(manifestFullPath, JSON.stringify(upstreamManifest, null, 2) + "\n", "utf8");
+        console.log("➕ Created src/appsscript.json from upstream.");
+        return true;
+    }
+
+    let localManifest;
+    try {
+        localManifest = JSON.parse(fs.readFileSync(manifestFullPath, "utf8"));
+    } catch (err) {
+        console.warn(`⚠️  Could not parse local src/appsscript.json (${err.message}), skipping smart-merge.`);
+        return false;
+    }
+
+    const mergeBaseRef = getMergeBaseRef(sourceRef);
+    const hasCommonBase = Boolean(mergeBaseRef);
+    const baseManifest = hasCommonBase
+        ? readGitJsonFile(mergeBaseRef, manifestRelPath)
+        : (gitRefExists("HEAD") ? readGitJsonFile("HEAD", manifestRelPath) : null);
+
+    const mergedManifest = threeWayMergeJson(
+        baseManifest || {},
+        localManifest,
+        upstreamManifest,
+        "root",
+        hasCommonBase
+    );
+
+    const beforeStr = JSON.stringify(localManifest, null, 2) + "\n";
+    const afterStr = JSON.stringify(mergedManifest, null, 2) + "\n";
+
+    if (beforeStr !== afterStr) {
+        fs.writeFileSync(manifestFullPath, afterStr, "utf8");
+        console.log(`🔄 Smart-merged src/appsscript.json (${hasCommonBase ? "3-way via merge-base" : "3-way HEAD/local/upstream"}).`);
+    }
+
+    return true;
 }
 
 function updateFrameworkFromRemote() {
@@ -2148,7 +2896,8 @@ function updateFrameworkFromRemote() {
         ".clasprc.json",
         "README.md",
         "package.json",
-        "package-lock.json"
+        "package-lock.json",
+        "src/appsscript.json"
     ]);
 
     const mergeManagedFiles = new Set([
@@ -2166,7 +2915,7 @@ function updateFrameworkFromRemote() {
     ];
 
     const generatedCoreFiles = new Set([
-        "src/core/Core_Views_Compiled.js"
+        "src/core/CompiledViews.js"
     ]);
 
     const sourceRef = resolveRemoteSourceRef(remoteName, branch, repoUrl, isReexec);
@@ -2190,7 +2939,8 @@ function updateFrameworkFromRemote() {
         console.log("🔀 Smart-merged files:");
         console.log("   - .gitignore, .claspignore (append missing rules)");
         console.log("   - .clasp.json (merge filePushOrder & defaults)");
-        console.log("   - package.json & package-lock.json (sync version field)");
+        console.log("   - src/appsscript.json (3-way JSON merge preserving custom oauthScopes & settings)");
+        console.log("   - package.json & package-lock.json (smart-merge version, scripts, bin & framework deps)");
         console.log(`📦 Discovered ${filesToSync.length} framework file(s) from ${sourceRef}.`);
     }
 
@@ -2235,6 +2985,12 @@ function updateFrameworkFromRemote() {
         );
         process.exit(reexecRes.status || 0);
     }
+
+    const prevCodeGenSource = hasHeadCommit
+        ? readGitTextFile("HEAD", "src/tools/CodeGenerator.js")
+        : (fs.existsSync(path.join(SRC_DIR, "tools", "CodeGenerator.js"))
+            ? fs.readFileSync(path.join(SRC_DIR, "tools", "CodeGenerator.js"), "utf8")
+            : null);
 
     let gitMergeRecorded = false;
 
@@ -2304,6 +3060,7 @@ function updateFrameworkFromRemote() {
     }
 
     checkoutFilesFromRef(sourceRef, filesToSync);
+    preserveCodeGeneratorTarget(prevCodeGenSource);
 
     for (const ignoreFile of mergeManagedFiles) {
         mergeIgnoreFileFromRef(sourceRef, ignoreFile);
@@ -2318,21 +3075,33 @@ function updateFrameworkFromRemote() {
     }
 
     syncClaspConfigAfterUpdate();
+    mergeAppsScriptManifestFromRef(sourceRef);
     if (ensureManifestScopes()) {
         console.log("🔄 Updated OAuth scopes & executionApi in src/appsscript.json.");
     }
     compileViews();
 
-    const remotePkg = syncPackageVersionFromRef(sourceRef);
+    const { remotePkg, needsNpmInstall } = syncPackageJsonFromRef(sourceRef);
     const localPkgPath = path.join(ROOT_DIR, "package.json");
     const localPkg = fs.existsSync(localPkgPath)
         ? JSON.parse(fs.readFileSync(localPkgPath, "utf8"))
         : {};
 
+    if (needsNpmInstall) {
+        console.log("📥 Running 'npm install' for updated framework dependencies...");
+        const installRes = spawnBinSync("npm", ["install", "--no-audit", "--no-fund"], {
+            stdio: "inherit"
+        });
+        if (installRes.status !== 0) {
+            console.warn("⚠️  'npm install' exited with a non-zero status. Run 'npm install' manually if needed.");
+        }
+    }
+
     if (gitMergeRecorded) {
         const stageTargets = [
             ...filesToSync,
             ...Array.from(mergeManagedFiles),
+            "src/appsscript.json",
             "package.json",
             "package-lock.json"
         ].filter((f) => fs.existsSync(path.join(ROOT_DIR, f)) && !gitIsIgnored(f));
@@ -2352,16 +3121,15 @@ function updateFrameworkFromRemote() {
     if (remotePkg) {
         const remoteDeps = Object.assign({}, remotePkg.dependencies, remotePkg.devDependencies);
         const localDeps = Object.assign({}, localPkg.dependencies, localPkg.devDependencies);
-        const changedDeps = Object.entries(remoteDeps).filter(
-            ([pkg, ver]) => localDeps[pkg] !== ver
+        const userOverrides = Object.entries(remoteDeps).filter(
+            ([pkg, ver]) => localDeps[pkg] && localDeps[pkg] !== ver
         );
 
-        if (changedDeps.length > 0) {
-            console.log("⚠️  Upstream package.json dependency updates detected (local dependencies preserved):");
-            changedDeps.forEach(([pkg, ver]) => {
-                console.log(`   - ${pkg}: ${localDeps[pkg] || "(missing)"} -> ${ver}`);
+        if (userOverrides.length > 0) {
+            console.log("ℹ️  Local dependency versions differ from framework defaults (kept as-is):");
+            userOverrides.forEach(([pkg, ver]) => {
+                console.log(`   - ${pkg}: local=${localDeps[pkg]} (framework=${ver})`);
             });
-            console.log("👉 Update dependencies in package.json if needed and run 'npm install'.");
         }
     }
 
@@ -2410,7 +3178,7 @@ function updateFrameworkFromRemote() {
             break;
 
         case "login":
-            runClaspCommand("login");
+            runClaspArgs(["login"]);
             break;
 
         case "creds": {
@@ -2433,12 +3201,12 @@ function updateFrameworkFromRemote() {
         case "pull":
         case "clasp:pull":
             ensureClaspConfigured();
-            runClaspCommand("pull");
+            runClaspArgs(["pull"]);
             break;
 
         case "status":
             ensureClaspConfigured();
-            runClaspCommand("show-file-status");
+            runClaspArgs(["show-file-status"]);
             break;
 
         case "open":
@@ -2451,7 +3219,7 @@ function updateFrameworkFromRemote() {
 
         case "make:module": {
             if (!arg1 || hasFlag("-h", "--h", "--help")) {
-                console.error("Usage: gas make:module Project [--api|--hybrid|--web]");
+                console.error("Usage: gas make:module Project [--api|-r|--resource]");
                 process.exit(arg1 ? 0 : 1);
             }
             const entity = normalizeEntityName(arg1);
@@ -2466,13 +3234,20 @@ function updateFrameworkFromRemote() {
 
         case "make:model": {
             if (!arg1 || hasFlag("-h", "--h", "--help")) {
-                console.error("Usage: gas make:model Project [-m|--migration] [-c|--controller] [-s|--seeder] [-r|--resource] [-a|--all] [--api|--hybrid|--web]");
+                console.error("Usage: gas make:model Project [-m|--migration] [-c|--controller] [-s|--seeder] [-r|--resource] [-a|--all] [--api]");
                 process.exit(arg1 ? 0 : 1);
             }
             const entity = normalizeEntityName(arg1);
             const tablePascal = toPascalCase(pluralizeSnake(toSnakeCase(entity)));
-            const modeFlag = resolveControllerMode("--api");
             const createAll = hasFlag("-a", "--all");
+            const wantsResource = hasFlag("-r", "--resource");
+            const wantsApi = hasFlag("--api");
+            const wantsPlain = hasFlag("--plain", "--web");
+            const modeFlag = wantsResource
+                ? "--resource"
+                : wantsPlain
+                    ? "--plain"
+                    : "--api";
 
             createModel(entity);
 
@@ -2482,7 +3257,7 @@ function updateFrameworkFromRemote() {
             if (createAll || hasFlag("-s", "--seeder")) {
                 createSeeder(entity);
             }
-            if (createAll || hasFlag("-c", "--controller", "-r", "--resource")) {
+            if (createAll || wantsResource || wantsApi || hasFlag("-c", "--controller")) {
                 createController(`${entity}Controller`, modeFlag);
             }
             break;
@@ -2498,10 +3273,10 @@ function updateFrameworkFromRemote() {
 
         case "make:controller": {
             if (!arg1 || hasFlag("-h", "--h", "--help")) {
-                console.error("Usage: gas make:controller HomeController [--web|--api|--hybrid]");
+                console.error("Usage: gas make:controller HomeController [--api|-r|--resource]");
                 process.exit(arg1 ? 0 : 1);
             }
-            const modeFlag = resolveControllerMode("--web");
+            const modeFlag = resolveControllerMode("--plain");
             createController(arg1, modeFlag);
             break;
         }
@@ -2597,14 +3372,16 @@ function updateFrameworkFromRemote() {
                     : "☁️  Running remote migration on Google Apps Script..."
             );
 
-            const localEnv = loadLocalEnv(path.join(ROOT_DIR, ".env"));
+            const appEnv = filterAppEnv(loadLocalEnv(path.join(ROOT_DIR, ".env")));
             const res = tryClaspRun(
                 "setupWorkspace",
                 {
-                    env: localEnv,
+                    env: appEnv,
+                    envMode: "keep",
+                    sheetMode: "keep",
                     migrate: true,
                     seed: shouldSeed,
-                    webAppUrl: resolveBaseUrl(localEnv, cfg.webAppUrl || "")
+                    webAppUrl: resolveBaseUrl(appEnv, cfg.webAppUrl || "")
                 },
                 true
             );
