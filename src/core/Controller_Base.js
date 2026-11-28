@@ -38,7 +38,6 @@ class Controller {
         return _resolveControllerClass(target);
     }
 
-    // Backward compatibility untuk controller lama yang memakai BaseController.init({...})
     static init(definition) {
         var instance = new Controller();
         var def = definition || {};
