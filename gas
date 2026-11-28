@@ -2387,13 +2387,13 @@ function resolveRemoteSourceRef(remoteName, branchOrTag, repoUrl, skipFetch = fa
     }
 
     const remoteBranchRef = `refs/remotes/${remoteName}/${targetBranch}`;
-    const localTagRef = `refs/tags/${targetBranch}`;
+    const remoteTagRef = `refs/remotes/${remoteName}/tags/${targetBranch}`;
 
     if (!skipFetch) {
         console.log(`🔄 Fetching '${targetBranch}' from ${remoteName}...`);
         const branchFetch = spawnSync(
             "git",
-            ["fetch", "--tags", remoteName, `+refs/heads/${targetBranch}:${remoteBranchRef}`],
+            ["fetch", "--no-tags", remoteName, `+refs/heads/${targetBranch}:${remoteBranchRef}`],
             { cwd: ROOT_DIR, stdio: "pipe", encoding: "utf8" }
         );
 
@@ -2403,12 +2403,12 @@ function resolveRemoteSourceRef(remoteName, branchOrTag, repoUrl, skipFetch = fa
 
         const tagFetch = spawnSync(
             "git",
-            ["fetch", remoteName, `+refs/tags/${targetBranch}:${localTagRef}`],
+            ["fetch", "--no-tags", remoteName, `+refs/tags/${targetBranch}:${remoteTagRef}`],
             { cwd: ROOT_DIR, stdio: "pipe", encoding: "utf8" }
         );
 
         if (tagFetch.status === 0) {
-            return { sourceRef: localTagRef, resolvedBranch: targetBranch };
+            return { sourceRef: remoteTagRef, resolvedBranch: targetBranch };
         }
 
         const fetchErr = String(branchFetch.stderr || tagFetch.stderr || "").trim();
@@ -2423,8 +2423,8 @@ function resolveRemoteSourceRef(remoteName, branchOrTag, repoUrl, skipFetch = fa
     if (gitRefExists(remoteBranchRef)) {
         return { sourceRef: `${remoteName}/${targetBranch}`, resolvedBranch: targetBranch };
     }
-    if (gitRefExists(localTagRef)) {
-        return { sourceRef: localTagRef, resolvedBranch: targetBranch };
+    if (gitRefExists(remoteTagRef)) {
+        return { sourceRef: remoteTagRef, resolvedBranch: targetBranch };
     }
     return { sourceRef: `${remoteName}/${targetBranch}`, resolvedBranch: targetBranch };
 }
