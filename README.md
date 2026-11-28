@@ -2,7 +2,7 @@
 
 **Laravel-inspired Hybrid Web & REST API MVC framework for Google Apps Script.**
 
-![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)
+![Version](https://img.shields.io/badge/version-3.0.1-blue.svg)
 ![Runtime](https://img.shields.io/badge/runtime-Google%20Apps%20Script%20V8-green.svg)
 ![Node.js](https://img.shields.io/badge/local%20emulator-Node.js%2018%2B-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)
@@ -38,7 +38,7 @@
 ├── gas                         # Unified CLI executable (Unix/macOS/Git Bash)
 ├── gas.cmd                     # Unified CLI wrapper (Windows CMD/PowerShell)
 ├── .env.example                # Environment template (APP_MODE, API_PREFIX, APP_DEBUG, APP_KEY, etc.)
-├── .clasp.json.example         # Template clasp config with deterministic v3.0.0 filePushOrder
+├── .clasp.json.example         # Template clasp config with deterministic filePushOrder
 ├── .claspignore                # Excludes raw .gas.js views & local files from GAS push
 ├── package.json                # Dependencies and npm scripts
 ├── local/
@@ -282,7 +282,7 @@ gas init "My GAS Backend"
 
 ### 2. Deploy as Web App
 ```bash
-gas deploy "v3.0.0"
+gas deploy
 ```
 On the first push/deploy, if `APP_KEY` is not yet set, the CLI automatically generates and saves one (or prompts when `GAS_DEPLOY_AUTO_KEY=false`). `gas deploy` compiles views, pushes `src/` to Google Apps Script, publishes a versioned Web App deployment, safely syncs `.env` keys (`APP_MODE`, `API_PREFIX`, `APP_DEBUG`, `APP_KEY`) to Script Properties without clobbering existing production keys, and outputs your production URL (`https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec`).
 
