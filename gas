@@ -2625,7 +2625,7 @@ function syncPackageJsonFromRef(ref) {
             if (!localPkg.bin || typeof localPkg.bin !== "object") {
                 localPkg.bin = {};
             }
-            const headBin = (headPkg.bin && typeof headPkg.bin === "object") ? headBin : {};
+            const headBin = (headPkg.bin && typeof headPkg.bin === "object") ? headPkg.bin : {};
 
             for (const [key, remoteVal] of Object.entries(remotePkg.bin)) {
                 const localVal = localPkg.bin[key];
