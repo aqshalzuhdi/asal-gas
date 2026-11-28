@@ -2352,38 +2352,81 @@ function resolveRemoteSourceRef(remoteName, branchOrTag, repoUrl, skipFetch = fa
         if (setRes.status !== 0) process.exit(setRes.status || 1);
     }
 
-    const remoteBranchRef = `refs/remotes/${remoteName}/${branchOrTag}`;
-    const localTagRef = `refs/tags/${branchOrTag}`;
+    let targetBranch = branchOrTag;
+    if (!targetBranch) {
+        if (!skipFetch) {
+            const headProbe = spawnSync("git", ["ls-remote", "--symref", remoteName, "HEAD"], {
+                cwd: ROOT_DIR,
+                stdio: "pipe",
+                encoding: "utf8"
+            });
+            if (headProbe.status !== 0) {
+                const errDetail = String(headProbe.stderr || headProbe.stdout || "").trim();
+                console.error(`❌ Failed to connect to remote '${remoteName}' (${repoUrl}).`);
+                if (errDetail) console.error(errDetail);
+                process.exit(1);
+            }
+
+            const probeOut = String(headProbe.stdout || "").trim();
+            if (!probeOut) {
+                console.error(`❌ Remote '${remoteName}' (${repoUrl}) is empty (no commits or branches found).`);
+                process.exit(1);
+            }
+            const symrefMatch = probeOut.match(/^ref:\s+refs\/heads\/([^\s]+)\s+HEAD$/m);
+            targetBranch = symrefMatch ? symrefMatch[1] : "main";
+        } else {
+            const refsProbe = spawnSync(
+                "git",
+                ["for-each-ref", "--sort=-committerdate", "--format=%(refname)", `refs/remotes/${remoteName}`],
+                { cwd: ROOT_DIR, stdio: "pipe", encoding: "utf8" }
+            );
+            const firstRef = String(refsProbe.stdout || "").split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+            const prefix = `refs/remotes/${remoteName}/`;
+            targetBranch = firstRef && firstRef.startsWith(prefix) ? firstRef.slice(prefix.length) : "main";
+        }
+    }
+
+    const remoteBranchRef = `refs/remotes/${remoteName}/${targetBranch}`;
+    const localTagRef = `refs/tags/${targetBranch}`;
 
     if (!skipFetch) {
-        console.log(`🔄 Fetching '${branchOrTag}' from ${remoteName}...`);
+        console.log(`🔄 Fetching '${targetBranch}' from ${remoteName}...`);
         const branchFetch = spawnSync(
             "git",
-            ["fetch", "--tags", remoteName, `+refs/heads/${branchOrTag}:${remoteBranchRef}`],
+            ["fetch", "--tags", remoteName, `+refs/heads/${targetBranch}:${remoteBranchRef}`],
             { cwd: ROOT_DIR, stdio: "pipe", encoding: "utf8" }
         );
 
         if (branchFetch.status === 0) {
-            return `${remoteName}/${branchOrTag}`;
+            return { sourceRef: `${remoteName}/${targetBranch}`, resolvedBranch: targetBranch };
         }
 
         const tagFetch = spawnSync(
             "git",
-            ["fetch", remoteName, `+refs/tags/${branchOrTag}:${localTagRef}`],
+            ["fetch", remoteName, `+refs/tags/${targetBranch}:${localTagRef}`],
             { cwd: ROOT_DIR, stdio: "pipe", encoding: "utf8" }
         );
 
         if (tagFetch.status === 0) {
-            return localTagRef;
+            return { sourceRef: localTagRef, resolvedBranch: targetBranch };
         }
 
-        console.error(`❌ Branch or tag '${branchOrTag}' not found on remote '${remoteName}' (${repoUrl}).`);
+        const fetchErr = String(branchFetch.stderr || tagFetch.stderr || "").trim();
+        if (fetchErr && !fetchErr.includes("couldn't find remote ref")) {
+            console.error(`❌ Git fetch failed for '${remoteName}' (${repoUrl}):\n${fetchErr}`);
+        } else {
+            console.error(`❌ Branch or tag '${targetBranch}' not found on remote '${remoteName}' (${repoUrl}).`);
+        }
         process.exit(1);
     }
 
-    if (gitRefExists(remoteBranchRef)) return `${remoteName}/${branchOrTag}`;
-    if (gitRefExists(localTagRef)) return localTagRef;
-    return `${remoteName}/${branchOrTag}`;
+    if (gitRefExists(remoteBranchRef)) {
+        return { sourceRef: `${remoteName}/${targetBranch}`, resolvedBranch: targetBranch };
+    }
+    if (gitRefExists(localTagRef)) {
+        return { sourceRef: localTagRef, resolvedBranch: targetBranch };
+    }
+    return { sourceRef: `${remoteName}/${targetBranch}`, resolvedBranch: targetBranch };
 }
 
 function restorePathsToHead(paths) {
@@ -2873,7 +2916,7 @@ function updateFrameworkFromRemote() {
     }
 
     const remoteName = getFlagValue("--remote") || "framework";
-    const branch = getFlagValue("--branch") || "main";
+    const explicitBranch = getFlagValue("--branch");
     const repoUrl = getFlagValue("--repo") || "https://github.com/aqshalzuhdi/asal-gas.git";
     const dryRun = flags.includes("--dry-run");
     const autoCommit = flags.includes("--commit");
@@ -2918,7 +2961,12 @@ function updateFrameworkFromRemote() {
         "src/core/CompiledViews.js"
     ]);
 
-    const sourceRef = resolveRemoteSourceRef(remoteName, branch, repoUrl, isReexec);
+    const { sourceRef, resolvedBranch: branch } = resolveRemoteSourceRef(
+        remoteName,
+        explicitBranch,
+        repoUrl,
+        isReexec
+    );
     const allRemoteFiles = listAllFilesInGitTree(sourceRef);
 
     if (allRemoteFiles.length === 0) {
@@ -2978,6 +3026,9 @@ function updateFrameworkFromRemote() {
     if (!isReexec && bootstrapFiles.length > 0) {
         checkoutFilesFromRef(sourceRef, bootstrapFiles);
         const forwardedArgs = rawArgs.filter((a) => a !== "--reexec");
+        if (!explicitBranch && branch) {
+            forwardedArgs.push("--branch", branch);
+        }
         const reexecRes = spawnSync(
             process.execPath,
             [__filename, "framework:update", "--reexec", ...forwardedArgs],
