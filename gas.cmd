@@ -1,2 +1,2 @@
-@echo off 
-node "%~dp0gas" %*
+@echo off
+node --no-deprecation "%~dp0\gas" %*

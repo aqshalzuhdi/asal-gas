@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+process.noDeprecation = true;
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -8,9 +9,92 @@ const https = require("https");
 const crypto = require("crypto");
 const readline = require("readline");
 const { execSync, spawnSync, spawn } = require("child_process");
+
+function isFile(filePath) {
+    try {
+        return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+    } catch (_) {
+        return false;
+    }
+}
+
+function isSameFile(a, b) {
+    try {
+        const realA = fs.realpathSync(a);
+        const realB = fs.realpathSync(b);
+        return process.platform === "win32"
+            ? realA.toLowerCase() === realB.toLowerCase()
+            : realA === realB;
+    } catch (_) {
+        return false;
+    }
+}
+
+function findProjectRoot(startDir) {
+    const start = path.resolve(startDir);
+
+    // Pass 1: Cari marker utama Asal-GAS ('gas' atau '.clasp.json') secara ketat
+    let dir = start;
+    while (true) {
+        if (isFile(path.join(dir, "gas")) || isFile(path.join(dir, ".clasp.json"))) {
+            return dir;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+
+    // Pass 2: Fallback ke marker spesifik GAS (hindari folder 'src' umum milik Nuxt/React)
+    dir = start;
+    while (true) {
+        if (
+            isFile(path.join(dir, "src", "appsscript.json")) ||
+            isFile(path.join(dir, "local", "runtime", "GasLoader.js"))
+        ) {
+            return dir;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+
+    return null;
+}
+
+const DETECTED_ROOT = findProjectRoot(process.cwd());
+const ROOT_DIR = DETECTED_ROOT || path.resolve(process.cwd());
+const localGasBin = path.join(ROOT_DIR, "gas");
+
+// Jika dipanggil dari luar folder project Asal-GAS via shim global lama, hentikan dengan aman
+if (!DETECTED_ROOT && !isSameFile(path.join(path.dirname(__filename), "gas"), __filename)) {
+    console.error("❌ Direktori saat ini bukan project Asal-GAS (file 'gas' atau '.clasp.json' tidak ditemukan).");
+    process.exit(1);
+}
+
+// Delegasikan SEBELUM load ./local/runtime/* agar tidak pernah bentrok dengan shim npm link lama
+if (isFile(localGasBin) && !isSameFile(localGasBin, __filename)) {
+    const delegated = spawnSync(process.execPath, [localGasBin, ...process.argv.slice(2)], {
+        cwd: ROOT_DIR,
+        stdio: "inherit"
+    });
+    process.exit(delegated.status ?? 0);
+}
+
+// Pastikan CWD selalu terkunci di ROOT_DIR meski perintah dijalankan dari subfolder (misal: src/)
+if (DETECTED_ROOT && process.cwd() !== ROOT_DIR) {
+    try {
+        process.chdir(ROOT_DIR);
+    } catch (_) { }
+}
+
 const { bootGasRuntime } = require("./local/runtime/GasLoader");
 const { DB_FILE } = require("./local/runtime/GasMocks");
 const { loadLocalEnv } = require("./local/runtime/EnvLoader");
+const { syncShellIntegration } = require("./local/runtime/SetupShell");
+
+try {
+    syncShellIntegration(true, ROOT_DIR);
+} catch (_) { }
 
 const [, , command, ...rawArgs] = process.argv;
 const VALUE_FLAGS = new Set(["--id", "--method", "--remote", "--branch", "--repo", "--class"]);
@@ -31,7 +115,6 @@ for (let i = 0; i < rawArgs.length; i++) {
 
 const arg1 = positionalArgs[0];
 
-const ROOT_DIR = __dirname;
 const SRC_DIR = path.join(ROOT_DIR, "src");
 const CLASP_FILE = path.join(ROOT_DIR, ".clasp.json");
 const CREDS_FILE = path.join(ROOT_DIR, "creds.json");
@@ -331,12 +414,19 @@ function syncApiExecutableDeployment(cfg) {
         return;
     }
 
-    const res = spawnSync(`npx --quiet clasp deploy -i ${apiDeploymentId} -d "API Executable"`, {
-        cwd: ROOT_DIR,
-        encoding: "utf8",
-        shell: true,
-        stdio: ["ignore", "pipe", "pipe"]
-    });
+    const isWin = process.platform === "win32";
+    const res = isWin
+        ? spawnSync(`npx --quiet clasp deploy -i ${apiDeploymentId} -d "API Executable"`, {
+            cwd: ROOT_DIR,
+            encoding: "utf8",
+            shell: true,
+            stdio: ["ignore", "pipe", "pipe"]
+        })
+        : spawnSync("npx", ["--quiet", "clasp", "deploy", "-i", apiDeploymentId, "-d", "API Executable"], {
+            cwd: ROOT_DIR,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"]
+        });
 
     const out = String(res.stdout || "").trim();
     const err = String(res.stderr || "").trim();
@@ -870,16 +960,27 @@ function extractGasException(combinedText) {
 
 function tryClaspRun(fnName, payloadObj, verbose = false) {
     const hasPayload = payloadObj !== null && payloadObj !== undefined;
-    const argsPart = hasPayload
-        ? ` -p "${JSON.stringify([payloadObj]).replace(/"/g, '\\"')}"`
-        : "";
+    const isWin = process.platform === "win32";
 
-    const proc = spawnSync(`npx --quiet clasp run ${fnName}${argsPart}`, {
-        cwd: ROOT_DIR,
-        encoding: "utf8",
-        shell: true,
-        stdio: ["ignore", "pipe", "pipe"]
-    });
+    const proc = isWin
+        ? spawnSync(
+            `npx --quiet clasp run ${fnName}${hasPayload ? ` -p "${JSON.stringify([payloadObj]).replace(/"/g, '\\"')}"` : ""}`,
+            {
+                cwd: ROOT_DIR,
+                encoding: "utf8",
+                shell: true,
+                stdio: ["ignore", "pipe", "pipe"]
+            }
+        )
+        : spawnSync(
+            "npx",
+            ["--quiet", "clasp", "run", fnName, ...(hasPayload ? ["-p", JSON.stringify([payloadObj])] : [])],
+            {
+                cwd: ROOT_DIR,
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"]
+            }
+        );
 
     const stdout = String(proc.stdout || "").trim();
     const stderr = String(proc.stderr || "")

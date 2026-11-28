@@ -1,10 +1,11 @@
 {
     "name": "asal-gas",
-    "version": "2.4.0",
+    "version": "2.4.1",
     "bin": {
         "gas": "./gas"
     },
     "scripts": {
+        "postinstall": "node local/runtime/SetupShell.js",
         "dev": "nodemon --watch src --watch local --watch .env --ignore local/storage --ext js,json,env local/server.js",
         "migrate": "node gas migrate",
         "migrate:fresh": "node gas migrate:fresh",
